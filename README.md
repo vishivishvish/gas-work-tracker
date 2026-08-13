@@ -124,7 +124,7 @@ Since Apps Script web apps can't push updates over a server socket,
 `Index.html` instead polls `getLastModified()` every 5 seconds (a single
 cheap cell read), only re-fetching the full board (`getBoardData()`) once
 that timestamp has actually moved. Every write function bumps the timestamp, and (with the
-installable trigger from step 6) so does any direct edit in the Sheet.
+installable trigger from step 7) so does any direct edit in the Sheet.
 
 ## Thread and sub-thread reordering
 
