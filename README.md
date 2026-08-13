@@ -97,10 +97,10 @@ between Drive folders at any time without breaking anything.
    click **Run** once. It only adds the missing columns and never touches
    existing data - brand-new setups already have them from `setupSheets`
    and can skip this.
-5b. *If you had this project set up before per-thread `Color` existed*,
+6. *If you had this project set up before per-thread `Color` existed*,
    select `migrateAddThreadColor` in the function dropdown and click **Run**
    once, for the same reason as above.
-6. *(Optional, recommended)* Set up direct-edit sync: select `installEditTrigger`
+7. *(Optional, recommended)* Set up direct-edit sync: select `installEditTrigger`
    in the function dropdown and click **Run**. (Not done via the Triggers UI's
    "Add Trigger" dialog - its "From spreadsheet" event source is only offered
    to scripts *bound* to a Sheet, i.e. opened via Extensions > Apps Script
@@ -109,11 +109,11 @@ between Drive folders at any time without breaking anything.
    Without this, edits made directly in the Sheet (rather than through the
    web app) won't be picked up until the next write through the app bumps
    `LastModified` - with it, direct Sheet edits sync too.
-7. **Deploy > New deployment > Web app**. Execute as: **Me**. Who has
+8. **Deploy > New deployment > Web app**. Execute as: **Me**. Who has
    access: **Only myself** (or your Workspace domain, if teammates should
    use it too - they'd then also need edit access to the underlying Sheet).
    Copy the resulting web app URL - that's the bookmark you'll use daily.
-8. To ship code changes later **without changing that URL**: **Deploy >
+9. To ship code changes later **without changing that URL**: **Deploy >
    Manage deployments** > pick the existing deployment > pencil/Edit icon >
    Version: **New version** > Deploy. Creating a brand-new deployment
    instead of editing the existing one gives you a different URL each time.
