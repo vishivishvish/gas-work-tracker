@@ -1,5 +1,8 @@
 # Google Apps Script Work Tracker
 
+*The deployed app's UI (page title, brand mark, breadcrumb) is still
+branded "Vishnu's Landscape" - that's expected, not a stale build.*
+
 A horizontal, Trello-like work tracker for managing a large number of ongoing
 work threads. Each numbered thread branches out into sub-threads
 laid out side by side, and each sub-thread holds a list of lettered,
