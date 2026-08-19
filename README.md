@@ -1,6 +1,6 @@
 # Google Apps Script Work Tracker
 
-A horizontal, Trello-like work tracker for managing a large number of ongoing
+A horizontal, Trello-like work tracker with a high degree of flexibility & extensibility for managing a large number of ongoing
 work threads. Each numbered thread branches out into sub-threads
 laid out side by side, and each sub-thread holds a list of lettered,
 checkable action steps. Threads can be dragged to reorder them, colored
