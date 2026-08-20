@@ -16,11 +16,18 @@ const ACTION_ITEM_SHEET_NAMES = {
 
 const MEETING_LOOKBACK_HOURS = 24;
 
+// NIM's OpenAI-compatible chat completions endpoint. Model is a Script
+// Property (NIM_MODEL) rather than hardcoded, since NIM's catalog of hosted
+// Nemotron/other models changes - set it to whatever model ID you've picked
+// on build.nvidia.com. NIM_API_KEY is required; get one from build.nvidia.com.
+const NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+
 function ensureActionItemSheets_() {
   const ss = SpreadsheetApp.openById(getSheetId_());
   ensureSheet_(ss, ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS, [
-    "EventID", "Title", "Status", "FirstSeenAt", "LastCheckedAt", "NotesDocId",
+    "EventID", "Title", "Status", "FirstSeenAt", "LastCheckedAt", "NotesDocId", "ProposalsJson",
   ]);
+  ensureColumn_(getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS), "ProposalsJson");
 }
 
 /**
@@ -140,5 +147,129 @@ function debugPrintFetchedNotes() {
   rows.forEach(function (r) {
     const text = getNotesDocText_(r.NotesDocId);
     Logger.log('--- "%s" (%s chars) ---\n%s', r.Title, text.length, text.substring(0, 500));
+  });
+}
+
+// ---- Piece 2/4: NIM call - propose action items + thread/sub-thread match ----
+
+/**
+ * Compact text summary of the current board's threads/sub-threads, given to
+ * the LLM so it matches against real structure instead of guessing blind.
+ */
+function buildBoardContextText_() {
+  const board = getBoardData().board;
+  if (!board.length) return "(no threads exist yet)";
+  return board
+    .map(function (t) {
+      const subLines = t.subthreads
+        .map(function (s) {
+          return "  - " + s.name + (s.tag ? " (tag: " + s.tag + ")" : "");
+        })
+        .join("\n");
+      return "- " + t.name + (subLines ? "\n" + subLines : "");
+    })
+    .join("\n");
+}
+
+function buildExtractionPrompt_(meetingTitle, notesText, boardContextText) {
+  return (
+    "You are extracting action items from a meeting's notes for a work " +
+    "tracker. The tracker organizes work as Threads, each containing " +
+    "Sub-Threads, each containing Action Items.\n\n" +
+    "Current threads and sub-threads:\n" + boardContextText + "\n\n" +
+    'Meeting title: "' + meetingTitle + '"\n\n' +
+    "Meeting notes:\n" + notesText + "\n\n" +
+    "Extract every concrete action item from these notes. For each one, " +
+    "decide which existing thread and sub-thread it belongs to. Only " +
+    "propose a new thread or sub-thread if none of the existing ones are a " +
+    "reasonable fit - prefer reusing existing structure. " +
+    "Respond with ONLY a JSON array (no markdown fences, no commentary), " +
+    "where each element has exactly these fields:\n" +
+    '{"text": string, "owner": string (best-guess name, or "" if unclear), ' +
+    '"threadName": string, "isNewThread": boolean, ' +
+    '"subThreadName": string, "isNewSubThread": boolean, ' +
+    '"subThreadTag": string (short tag, only meaningful if isNewSubThread), ' +
+    '"rationale": string (one short sentence on why this thread/sub-thread ' +
+    "was chosen, to help a human sanity-check the placement)}\n" +
+    "If there are no action items, respond with an empty JSON array: []"
+  );
+}
+
+/**
+ * Calls NIM's OpenAI-compatible chat completions endpoint and returns the
+ * parsed array of proposed action items. Throws on any failure (HTTP error,
+ * missing API key, unparsable response) so callers can leave the meeting's
+ * Status untouched and retry on the next poll.
+ */
+function callNimForActionItems_(meetingTitle, notesText) {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey = props.getProperty("NIM_API_KEY");
+  const model = props.getProperty("NIM_MODEL");
+  if (!apiKey) throw new Error("NIM_API_KEY not set in Script Properties.");
+  if (!model) throw new Error("NIM_MODEL not set in Script Properties.");
+
+  const prompt = buildExtractionPrompt_(meetingTitle, notesText, buildBoardContextText_());
+
+  const response = UrlFetchApp.fetch(NIM_API_URL, {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + apiKey },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+    }),
+  });
+
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error("NIM API error " + code + ": " + response.getContentText());
+  }
+
+  const parsed = JSON.parse(response.getContentText());
+  const content = parsed.choices && parsed.choices[0] && parsed.choices[0].message
+    ? parsed.choices[0].message.content
+    : null;
+  if (!content) throw new Error("NIM response missing choices[0].message.content.");
+
+  return parseActionItemsJson_(content);
+}
+
+/**
+ * NIM/Nemotron models sometimes wrap JSON in markdown fences despite being
+ * told not to - strip those before parsing.
+ */
+function parseActionItemsJson_(content) {
+  const cleaned = content.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const items = JSON.parse(cleaned);
+  if (!Array.isArray(items)) throw new Error("NIM response was not a JSON array.");
+  return items;
+}
+
+/**
+ * Runs NIM extraction for every meeting currently marked notes_fetched,
+ * storing the raw proposals JSON back onto its ProcessedMeetings row and
+ * advancing Status to "extracted". Leaves failures at notes_fetched so the
+ * next manual run (or future scheduled run) retries them.
+ */
+function extractActionItemsForFetchedMeetings() {
+  const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+  const rows = rowsToObjects_(sheet).filter(function (r) {
+    return r.Status === "notes_fetched";
+  });
+
+  Logger.log("%s meeting(s) to extract.", rows.length);
+
+  rows.forEach(function (r) {
+    try {
+      const notesText = getNotesDocText_(r.NotesDocId);
+      const items = callNimForActionItems_(r.Title, notesText);
+      updateCell_(sheet, "EventID", r.EventID, "ProposalsJson", JSON.stringify(items));
+      updateCell_(sheet, "EventID", r.EventID, "Status", "extracted");
+      Logger.log('Extracted %s item(s) for "%s".', items.length, r.Title);
+    } catch (err) {
+      Logger.log('Extraction failed for "%s": %s', r.Title, err.message);
+    }
   });
 }

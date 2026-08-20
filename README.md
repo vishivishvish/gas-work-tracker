@@ -59,27 +59,40 @@ one place that should always reflect what the app actually does today.
 
 ## Roadmap: automated action-item extraction from meeting notes
 
-In progress, not yet built. Every meeting on the calendar gets Gemini-generated
-notes attached to its Calendar event once the meeting ends (timing varies with
-meeting length); a time-driven trigger polls recent events every ~15 minutes
-until that attachment shows up, then reads the notes doc's text.
+In progress - built in four pieces, in `ActionItemExtraction.gs`, tracked via
+a new `ProcessedMeetings` tab on the same Sheet.
 
-That text, along with the current board's thread/sub-thread names, gets sent
-to an LLM (NVIDIA NIM) which proposes action items: text, owner, source
-meeting, and which thread/sub-thread each belongs to (or whether it needs a
-new one). Proposals land in a `PendingActions` tab - nothing on the board
-changes yet.
+**Piece 1 (done): poll for the Gemini notes doc.** Every meeting on the
+calendar gets Gemini-generated notes attached to its Calendar event once the
+meeting ends (timing varies with meeting length). `pollMeetingNotes()` runs
+on a 15-minute time-driven trigger, sweeps recent events via the Calendar
+Advanced Service, and marks each one `waiting` or `notes_fetched` in
+`ProcessedMeetings` depending on whether that attachment has shown up yet -
+so a meeting is only ever read once, whenever its notes actually land.
 
-An email goes out per meeting linking to a small approval web app where each
-proposed item can be accepted as-is or edited (text/owner) in free text.
-Accepting only marks that `PendingActions` row approved; it still doesn't
+**Piece 2 (done): propose action items via NIM.** For every `notes_fetched`
+meeting, `extractActionItemsForFetchedMeetings()` sends its notes text, plus
+a summary of the board's current threads/sub-threads, to NVIDIA NIM's
+OpenAI-compatible chat completions endpoint (model/API key set as Script
+Properties, never hardcoded). The model returns a JSON array of proposed
+items - text, owner, target thread/sub-thread (existing or new), and a short
+rationale for that placement - stored as-is on the meeting's
+`ProcessedMeetings` row (`ProposalsJson` column, `Status: extracted`).
+Nothing on the board changes yet.
+
+**Piece 3 (not started): pending-approval tab + email.** Proposals will move
+from `ProposalsJson` into a `PendingActions` tab (one row per item), and an
+email will go out per meeting linking to a small approval web app.
+
+**Piece 4 (not started): two-step approval.** Accepting/editing an item in
+the web app only marks its `PendingActions` row approved - it still won't
 touch the board, since thread/sub-thread placement is the part most likely to
-need a human check. A second "Review & Commit" screen lists all approved
-items grouped by their proposed thread/sub-thread, flags anything that would
-create a *new* thread or sub-thread, and lets that placement be overridden
-from a dropdown of real existing threads/sub-threads before a final Commit
-writes everything to the Sheet via the same `addThread`/`addSubThread`/
-`addItem` functions the app already uses.
+need a human check. A separate "Review & Commit" screen will list all
+approved items grouped by their proposed thread/sub-thread, flag anything
+that would create a *new* thread or sub-thread, and let that placement be
+overridden from a dropdown of real existing threads/sub-threads before a
+final Commit writes everything to the Sheet via the same
+`addThread`/`addSubThread`/`addItem` functions the app already uses.
 
 ## Files
 
