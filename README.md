@@ -57,6 +57,30 @@ one place that should always reflect what the app actually does today.
   trigger, edits made straight in the Google Sheet (not through the web
   app) also bump `LastModified` and show up on the next poll.
 
+## Roadmap: automated action-item extraction from meeting notes
+
+In progress, not yet built. Every meeting on the calendar gets Gemini-generated
+notes attached to its Calendar event once the meeting ends (timing varies with
+meeting length); a time-driven trigger polls recent events every ~15 minutes
+until that attachment shows up, then reads the notes doc's text.
+
+That text, along with the current board's thread/sub-thread names, gets sent
+to an LLM (NVIDIA NIM) which proposes action items: text, owner, source
+meeting, and which thread/sub-thread each belongs to (or whether it needs a
+new one). Proposals land in a `PendingActions` tab - nothing on the board
+changes yet.
+
+An email goes out per meeting linking to a small approval web app where each
+proposed item can be accepted as-is or edited (text/owner) in free text.
+Accepting only marks that `PendingActions` row approved; it still doesn't
+touch the board, since thread/sub-thread placement is the part most likely to
+need a human check. A second "Review & Commit" screen lists all approved
+items grouped by their proposed thread/sub-thread, flags anything that would
+create a *new* thread or sub-thread, and lets that placement be overridden
+from a dropdown of real existing threads/sub-threads before a final Commit
+writes everything to the Sheet via the same `addThread`/`addSubThread`/
+`addItem` functions the app already uses.
+
 ## Files
 
 - `Code.gs` - backend: Sheet schema setup, `doGet()` web app entry point,
