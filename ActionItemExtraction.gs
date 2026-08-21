@@ -825,3 +825,71 @@ function installActionItemPipelineTrigger() {
   ScriptApp.newTrigger("runActionItemPipeline").timeBased().everyMinutes(15).create();
   Logger.log("Installed 15-minute runActionItemPipeline trigger.");
 }
+
+/**
+ * One-off cleanup for the duplicate PendingActions rows caused by the
+ * pre-lock race condition (overlapping runs both emailing/creating rows for
+ * the same meeting). Groups rows by everything that would be identical for
+ * a genuine duplicate (EventID/Text/Owner/ThreadName/SubThreadName), keeps
+ * the earliest row in each group, and deletes the rest - but ONLY among
+ * rows still at Status "proposed", since those were never acted on and
+ * nothing on the board depends on them.
+ *
+ * Duplicates found at any OTHER status (e.g. "committed") are just logged,
+ * not touched - if you clicked two different duplicate tokens for the same
+ * item, there's a real duplicate item sitting on the Work Tracker board
+ * too, and only you can tell which copy (if either) to delete there.
+ * Safe to run multiple times; logs exactly what it deleted.
+ */
+function dedupePendingActions() {
+  const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0];
+  const col = {};
+  headers.forEach(function (h, i) { col[h] = i; });
+
+  const groups = {};
+  for (var r = 1; r < values.length; r++) {
+    const row = values[r];
+    const key = [
+      row[col.EventID], row[col.Text], row[col.Owner],
+      row[col.ThreadName], row[col.SubThreadName],
+    ].join("||");
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ rowIndex: r + 1, status: row[col.Status], createdAt: row[col.CreatedAt] });
+  }
+
+  var rowsToDelete = [];
+  var loggedOtherStatusDupes = 0;
+
+  Object.keys(groups).forEach(function (key) {
+    const group = groups[key];
+    if (group.length < 2) return;
+
+    const proposedRows = group.filter(function (g) { return g.status === "proposed"; });
+    const otherRows = group.filter(function (g) { return g.status !== "proposed"; });
+
+    if (proposedRows.length > 1) {
+      proposedRows.sort(function (a, b) { return a.createdAt - b.createdAt; });
+      // Keep the earliest, delete the rest.
+      proposedRows.slice(1).forEach(function (g) { rowsToDelete.push(g.rowIndex); });
+    }
+
+    if (otherRows.length > 1) {
+      loggedOtherStatusDupes++;
+      Logger.log(
+        'Found %s non-"proposed" duplicate row(s) for "%s" at rows %s - not auto-deleted. ' +
+        "Check your Work Tracker board for a matching duplicate item and remove it there if present.",
+        otherRows.length, key.split("||")[1], otherRows.map(function (g) { return g.rowIndex; }).join(", ")
+      );
+    }
+  });
+
+  // Delete highest row index first so earlier indices stay valid.
+  rowsToDelete.sort(function (a, b) { return b - a; }).forEach(function (rowIndex) {
+    sheet.deleteRow(rowIndex);
+  });
+
+  Logger.log("Deleted %s duplicate 'proposed' row(s). %s other-status duplicate group(s) need a manual look (see above).",
+    rowsToDelete.length, loggedOtherStatusDupes);
+}
