@@ -134,6 +134,13 @@ pending rows → email) for the 15-minute trigger
 Script Properties, deploy the web app, then run
 `installActionItemPipelineTrigger()` once.
 
+Each of the four stage functions (`pollMeetingNotes`, `extractActionItemsForFetchedMeetings`,
+`createPendingActionsForExtractedMeetings`, `sendPendingActionEmails`) holds
+`LockService`'s script lock for its whole run (`withScriptLock_()`), so an
+overlapping run - the 15-minute trigger firing while a manual test run is
+still in flight, say - skips entirely instead of racing the first run and
+double-sending the same email or double-creating the same pending rows.
+
 ## Files
 
 - `Code.gs` - backend: Sheet schema setup, `doGet()` web app entry point,

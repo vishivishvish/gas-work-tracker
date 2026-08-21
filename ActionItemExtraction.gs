@@ -84,6 +84,28 @@ function getWebAppBaseUrl_() {
 }
 
 /**
+ * Runs fn() while holding the script-wide lock, so two overlapping
+ * executions of the same pipeline stage (the 15-minute trigger firing while
+ * a manual test run is still in flight, or two trigger firings overlapping)
+ * can't both read a row's status as not-yet-handled and both act on it -
+ * which is what caused duplicate review emails. If the lock is already held
+ * (another run is genuinely in progress), this skips fn() entirely rather
+ * than waiting and re-doing work a moment later.
+ */
+function withScriptLock_(fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    Logger.log("Another run is already in progress - skipping this run.");
+    return;
+  }
+  try {
+    fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
  * Run once manually to create the ProcessedMeetings tab, then install the
  * time-driven trigger.
  */
@@ -111,46 +133,48 @@ function installMeetingPollTrigger() {
  * doc attachment and pulls its text once found.
  */
 function pollMeetingNotes() {
-  ensureActionItemSheets_();
-  const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
-  const tracked = rowsToObjects_(sheet);
-  const trackedByEventId = {};
-  tracked.forEach(function (row) {
-    trackedByEventId[row.EventID] = row;
+  withScriptLock_(function () {
+    ensureActionItemSheets_();
+    const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+    const tracked = rowsToObjects_(sheet);
+    const trackedByEventId = {};
+    tracked.forEach(function (row) {
+      trackedByEventId[row.EventID] = row;
+    });
+
+    const now = new Date();
+    const lookbackStart = new Date(now.getTime() - MEETING_LOOKBACK_HOURS * 60 * 60 * 1000);
+
+    const events = Calendar.Events.list("primary", {
+      timeMin: lookbackStart.toISOString(),
+      timeMax: now.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 100,
+    });
+
+    const items = events.items || [];
+    var foundCount = 0;
+
+    items.forEach(function (ev) {
+      const existing = trackedByEventId[ev.id];
+      if (existing && existing.Status === "notes_fetched") return;
+
+      const notesDoc = findNotesDocAttachment_(ev);
+
+      if (!notesDoc) {
+        upsertProcessedMeeting_(sheet, existing, ev, "waiting", "", "");
+        return;
+      }
+
+      const notesDate = getNotesDocDate_(notesDoc.fileId);
+      upsertProcessedMeeting_(sheet, existing, ev, "notes_fetched", notesDoc.fileId, notesDate);
+      foundCount++;
+      Logger.log('Notes doc found for "%s" (event %s): fileId=%s, date=%s', ev.summary, ev.id, notesDoc.fileId, notesDate);
+    });
+
+    Logger.log("Poll complete. %s event(s) newly notes_fetched.", foundCount);
   });
-
-  const now = new Date();
-  const lookbackStart = new Date(now.getTime() - MEETING_LOOKBACK_HOURS * 60 * 60 * 1000);
-
-  const events = Calendar.Events.list("primary", {
-    timeMin: lookbackStart.toISOString(),
-    timeMax: now.toISOString(),
-    singleEvents: true,
-    orderBy: "startTime",
-    maxResults: 100,
-  });
-
-  const items = events.items || [];
-  var foundCount = 0;
-
-  items.forEach(function (ev) {
-    const existing = trackedByEventId[ev.id];
-    if (existing && existing.Status === "notes_fetched") return;
-
-    const notesDoc = findNotesDocAttachment_(ev);
-
-    if (!notesDoc) {
-      upsertProcessedMeeting_(sheet, existing, ev, "waiting", "", "");
-      return;
-    }
-
-    const notesDate = getNotesDocDate_(notesDoc.fileId);
-    upsertProcessedMeeting_(sheet, existing, ev, "notes_fetched", notesDoc.fileId, notesDate);
-    foundCount++;
-    Logger.log('Notes doc found for "%s" (event %s): fileId=%s, date=%s', ev.summary, ev.id, notesDoc.fileId, notesDate);
-  });
-
-  Logger.log("Poll complete. %s event(s) newly notes_fetched.", foundCount);
 }
 
 /**
@@ -327,24 +351,26 @@ function parseActionItemsJson_(content) {
  * next manual run (or future scheduled run) retries them.
  */
 function extractActionItemsForFetchedMeetings() {
-  ensureActionItemSheets_();
-  const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
-  const rows = rowsToObjects_(sheet).filter(function (r) {
-    return r.Status === "notes_fetched";
-  });
+  withScriptLock_(function () {
+    ensureActionItemSheets_();
+    const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+    const rows = rowsToObjects_(sheet).filter(function (r) {
+      return r.Status === "notes_fetched";
+    });
 
-  Logger.log("%s meeting(s) to extract.", rows.length);
+    Logger.log("%s meeting(s) to extract.", rows.length);
 
-  rows.forEach(function (r) {
-    try {
-      const notesText = getNotesDocText_(r.NotesDocId);
-      const items = callNimForActionItems_(r.Title, notesText);
-      updateCell_(sheet, "EventID", r.EventID, "ProposalsJson", JSON.stringify(items));
-      updateCell_(sheet, "EventID", r.EventID, "Status", "extracted");
-      Logger.log('Extracted %s item(s) for "%s".', items.length, r.Title);
-    } catch (err) {
-      Logger.log('Extraction failed for "%s": %s', r.Title, err.message);
-    }
+    rows.forEach(function (r) {
+      try {
+        const notesText = getNotesDocText_(r.NotesDocId);
+        const items = callNimForActionItems_(r.Title, notesText);
+        updateCell_(sheet, "EventID", r.EventID, "ProposalsJson", JSON.stringify(items));
+        updateCell_(sheet, "EventID", r.EventID, "Status", "extracted");
+        Logger.log('Extracted %s item(s) for "%s".', items.length, r.Title);
+      } catch (err) {
+        Logger.log('Extraction failed for "%s": %s', r.Title, err.message);
+      }
+    });
   });
 }
 
@@ -357,46 +383,48 @@ function extractActionItemsForFetchedMeetings() {
  * leaves a meeting stuck between "some rows written" and "no rows written".
  */
 function createPendingActionsForExtractedMeetings() {
-  ensureActionItemSheets_();
-  const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
-  const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
-  const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
-    return r.Status === "extracted";
-  });
-
-  Logger.log("%s meeting(s) to turn into pending actions.", meetings.length);
-
-  meetings.forEach(function (meeting) {
-    var items;
-    try {
-      items = JSON.parse(meeting.ProposalsJson);
-    } catch (err) {
-      Logger.log('Skipping "%s": ProposalsJson did not parse (%s).', meeting.Title, err.message);
-      return;
-    }
-
-    const now = new Date().getTime();
-    items.forEach(function (item) {
-      appendRowByHeaders_(pendingSheet, {
-        Token: Utilities.getUuid(),
-        EventID: meeting.EventID,
-        MeetingTitle: meeting.Title,
-        Text: item.text || "",
-        Owner: item.owner || "",
-        OpenDate: meeting.NotesDate || "",
-        ThreadName: item.threadName || "",
-        IsNewThread: !!item.isNewThread,
-        SubThreadName: item.subThreadName || "",
-        IsNewSubThread: !!item.isNewSubThread,
-        SubThreadTag: item.subThreadTag || "",
-        Rationale: item.rationale || "",
-        Status: "proposed",
-        CreatedAt: now,
-      });
+  withScriptLock_(function () {
+    ensureActionItemSheets_();
+    const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+    const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
+    const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
+      return r.Status === "extracted";
     });
 
-    updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "rows_created");
-    Logger.log('Created %s pending action row(s) for "%s".', items.length, meeting.Title);
+    Logger.log("%s meeting(s) to turn into pending actions.", meetings.length);
+
+    meetings.forEach(function (meeting) {
+      var items;
+      try {
+        items = JSON.parse(meeting.ProposalsJson);
+      } catch (err) {
+        Logger.log('Skipping "%s": ProposalsJson did not parse (%s).', meeting.Title, err.message);
+        return;
+      }
+
+      const now = new Date().getTime();
+      items.forEach(function (item) {
+        appendRowByHeaders_(pendingSheet, {
+          Token: Utilities.getUuid(),
+          EventID: meeting.EventID,
+          MeetingTitle: meeting.Title,
+          Text: item.text || "",
+          Owner: item.owner || "",
+          OpenDate: meeting.NotesDate || "",
+          ThreadName: item.threadName || "",
+          IsNewThread: !!item.isNewThread,
+          SubThreadName: item.subThreadName || "",
+          IsNewSubThread: !!item.isNewSubThread,
+          SubThreadTag: item.subThreadTag || "",
+          Rationale: item.rationale || "",
+          Status: "proposed",
+          CreatedAt: now,
+        });
+      });
+
+      updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "rows_created");
+      Logger.log('Created %s pending action row(s) for "%s".', items.length, meeting.Title);
+    });
   });
 }
 
@@ -408,40 +436,46 @@ function createPendingActionsForExtractedMeetings() {
  * once it has been.
  */
 function sendPendingActionEmails() {
-  ensureActionItemSheets_();
-  const webAppUrl = getWebAppBaseUrl_();
-  if (!webAppUrl) {
-    Logger.log("No web app deployment found yet - skipping email send until this project is deployed.");
-    return;
-  }
-
-  const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
-  const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
-  const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
-    return r.Status === "rows_created";
-  });
-  const allPending = rowsToObjects_(pendingSheet);
-
-  Logger.log("%s meeting(s) to email.", meetings.length);
-
-  meetings.forEach(function (meeting) {
-    const items = allPending.filter(function (p) {
-      return p.EventID === meeting.EventID && p.Status === "proposed";
-    });
-    if (!items.length) {
-      updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
+  withScriptLock_(function () {
+    ensureActionItemSheets_();
+    const webAppUrl = getWebAppBaseUrl_();
+    if (!webAppUrl) {
+      Logger.log("No web app deployment found yet - skipping email send until this project is deployed.");
       return;
     }
 
-    const htmlBody = buildReviewEmailHtml_(meeting.Title, items, webAppUrl);
-    MailApp.sendEmail({
-      to: Session.getActiveUser().getEmail(),
-      subject: "Action items to review: " + meeting.Title,
-      htmlBody: htmlBody,
+    const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+    const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
+    const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
+      return r.Status === "rows_created";
     });
+    const allPending = rowsToObjects_(pendingSheet);
 
-    updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
-    Logger.log('Emailed %s item(s) for "%s".', items.length, meeting.Title);
+    Logger.log("%s meeting(s) to email.", meetings.length);
+
+    meetings.forEach(function (meeting) {
+      const items = allPending.filter(function (p) {
+        return p.EventID === meeting.EventID && p.Status === "proposed";
+      });
+      if (!items.length) {
+        updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
+        return;
+      }
+
+      try {
+        const htmlBody = buildReviewEmailHtml_(meeting.Title, items, webAppUrl);
+        MailApp.sendEmail({
+          to: Session.getActiveUser().getEmail(),
+          subject: "Action items to review: " + meeting.Title,
+          htmlBody: htmlBody,
+        });
+
+        updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
+        Logger.log('Emailed %s item(s) for "%s".', items.length, meeting.Title);
+      } catch (err) {
+        Logger.log('Failed to email/mark "%s" as emailed: %s. It will retry next run - check your inbox before re-running manually, in case the send itself succeeded but the status write failed.', meeting.Title, err.message);
+      }
+    });
   });
 }
 
