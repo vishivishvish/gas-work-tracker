@@ -6,12 +6,22 @@
  * `ProcessedMeetings` tab so a meeting is never re-scanned once its notes
  * doc has been found and read.
  *
+ * Piece 2/4: send each meeting's notes text (plus the board's current
+ * threads/sub-threads) to NVIDIA NIM, which proposes action items with a
+ * suggested thread/sub-thread placement and a rationale.
+ *
+ * Piece 3/4: expand those proposals into a `PendingActions` tab (one row per
+ * item, each with its own review token) and email a review link per item.
+ * Nothing lands on the board yet - see piece 4 for the two-step approval
+ * that actually writes to Threads/SubThreads/Items.
+ *
  * Requires the advanced "Google Calendar API" service (Services > + >
  * Google Calendar API) - same as the spike script.
  */
 
 const ACTION_ITEM_SHEET_NAMES = {
   PROCESSED_MEETINGS: "ProcessedMeetings",
+  PENDING_ACTIONS: "PendingActions",
 };
 
 const MEETING_LOOKBACK_HOURS = 24;
@@ -28,6 +38,12 @@ function ensureActionItemSheets_() {
     "EventID", "Title", "Status", "FirstSeenAt", "LastCheckedAt", "NotesDocId", "ProposalsJson",
   ]);
   ensureColumn_(getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS), "ProposalsJson");
+
+  ensureSheet_(ss, ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS, [
+    "Token", "EventID", "MeetingTitle", "Text", "Owner",
+    "ThreadName", "IsNewThread", "SubThreadName", "IsNewSubThread", "SubThreadTag",
+    "Rationale", "Status", "CreatedAt",
+  ]);
 }
 
 /**
@@ -272,4 +288,137 @@ function extractActionItemsForFetchedMeetings() {
       Logger.log('Extraction failed for "%s": %s', r.Title, err.message);
     }
   });
+}
+
+// ---- Piece 3/4: PendingActions tab + review email ----
+
+/**
+ * Expands each "extracted" meeting's ProposalsJson into one PendingActions
+ * row per item (each with its own review token), then advances the meeting
+ * to "rows_created". Split from email-sending so a mid-run failure never
+ * leaves a meeting stuck between "some rows written" and "no rows written".
+ */
+function createPendingActionsForExtractedMeetings() {
+  const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+  const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
+  const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
+    return r.Status === "extracted";
+  });
+
+  Logger.log("%s meeting(s) to turn into pending actions.", meetings.length);
+
+  meetings.forEach(function (meeting) {
+    var items;
+    try {
+      items = JSON.parse(meeting.ProposalsJson);
+    } catch (err) {
+      Logger.log('Skipping "%s": ProposalsJson did not parse (%s).', meeting.Title, err.message);
+      return;
+    }
+
+    const now = new Date().getTime();
+    items.forEach(function (item) {
+      pendingSheet.appendRow([
+        Utilities.getUuid(),
+        meeting.EventID,
+        meeting.Title,
+        item.text || "",
+        item.owner || "",
+        item.threadName || "",
+        !!item.isNewThread,
+        item.subThreadName || "",
+        !!item.isNewSubThread,
+        item.subThreadTag || "",
+        item.rationale || "",
+        "proposed",
+        now,
+      ]);
+    });
+
+    updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "rows_created");
+    Logger.log('Created %s pending action row(s) for "%s".', items.length, meeting.Title);
+  });
+}
+
+/**
+ * Sends one review email per "rows_created" meeting, listing its pending
+ * items with a per-item review link, then advances the meeting to "emailed".
+ * If WEBAPP_URL isn't set yet (the approval web app doesn't exist until
+ * piece 4 is deployed), this logs a warning and leaves the meeting at
+ * "rows_created" so it retries once WEBAPP_URL is set.
+ */
+function sendPendingActionEmails() {
+  const props = PropertiesService.getScriptProperties();
+  const webAppUrl = props.getProperty("WEBAPP_URL");
+  if (!webAppUrl) {
+    Logger.log("WEBAPP_URL not set yet - skipping email send until the approval web app is deployed.");
+    return;
+  }
+
+  const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
+  const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
+  const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
+    return r.Status === "rows_created";
+  });
+  const allPending = rowsToObjects_(pendingSheet);
+
+  Logger.log("%s meeting(s) to email.", meetings.length);
+
+  meetings.forEach(function (meeting) {
+    const items = allPending.filter(function (p) {
+      return p.EventID === meeting.EventID && p.Status === "proposed";
+    });
+    if (!items.length) {
+      updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
+      return;
+    }
+
+    const htmlBody = buildReviewEmailHtml_(meeting.Title, items, webAppUrl);
+    MailApp.sendEmail({
+      to: Session.getActiveUser().getEmail(),
+      subject: "Action items to review: " + meeting.Title,
+      htmlBody: htmlBody,
+    });
+
+    updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "emailed");
+    Logger.log('Emailed %s item(s) for "%s".', items.length, meeting.Title);
+  });
+}
+
+function buildReviewEmailHtml_(meetingTitle, items, webAppUrl) {
+  const rows = items
+    .map(function (item) {
+      const threadLabel = escapeHtml_(item.ThreadName) + (item.IsNewThread ? " <b>(NEW)</b>" : "");
+      const subThreadLabel = escapeHtml_(item.SubThreadName) + (item.IsNewSubThread ? " <b>(NEW)</b>" : "");
+      const reviewLink = webAppUrl + "?token=" + encodeURIComponent(item.Token);
+      return (
+        "<tr>" +
+        "<td>" + escapeHtml_(item.Text) + "</td>" +
+        "<td>" + escapeHtml_(item.Owner || "(unassigned)") + "</td>" +
+        "<td>" + threadLabel + " &rsaquo; " + subThreadLabel + "</td>" +
+        "<td><i>" + escapeHtml_(item.Rationale) + "</i></td>" +
+        '<td><a href="' + reviewLink + '">Review</a></td>' +
+        "</tr>"
+      );
+    })
+    .join("");
+
+  return (
+    "<p>Proposed action items from <b>" + escapeHtml_(meetingTitle) + "</b>:</p>" +
+    "<table border='1' cellpadding='6' cellspacing='0'>" +
+    "<tr><th>Item</th><th>Owner</th><th>Proposed thread &rsaquo; sub-thread</th><th>Why</th><th></th></tr>" +
+    rows +
+    "</table>" +
+    "<p>Click Review on each item to accept it as-is or edit it. " +
+    "Thread/sub-thread placement isn't final yet - you'll get a separate " +
+    "chance to double-check and commit that before anything hits the board.</p>"
+  );
+}
+
+function escapeHtml_(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

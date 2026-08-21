@@ -80,9 +80,16 @@ rationale for that placement - stored as-is on the meeting's
 `ProcessedMeetings` row (`ProposalsJson` column, `Status: extracted`).
 Nothing on the board changes yet.
 
-**Piece 3 (not started): pending-approval tab + email.** Proposals will move
-from `ProposalsJson` into a `PendingActions` tab (one row per item), and an
-email will go out per meeting linking to a small approval web app.
+**Piece 3 (done): pending-approval tab + email.**
+`createPendingActionsForExtractedMeetings()` expands each `extracted`
+meeting's `ProposalsJson` into one row per item on a new `PendingActions` tab
+(each row gets its own review token), advancing the meeting to
+`rows_created`. `sendPendingActionEmails()` then emails one HTML summary per
+meeting - item text, owner, proposed thread/sub-thread (flagged if it'd be
+new), and the LLM's rationale - with a per-item "Review" link, advancing the
+meeting to `emailed`. That link points at a `WEBAPP_URL` Script Property that
+stays unset (and email-sending stays paused) until the approval web app in
+piece 4 is deployed.
 
 **Piece 4 (not started): two-step approval.** Accepting/editing an item in
 the web app only marks its `PendingActions` row approved - it still won't
