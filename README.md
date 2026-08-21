@@ -141,6 +141,16 @@ overlapping run - the 15-minute trigger firing while a manual test run is
 still in flight, say - skips entirely instead of racing the first run and
 double-sending the same email or double-creating the same pending rows.
 
+On top of the lock, `createPendingActionsForExtractedMeetings()` also checks
+directly whether `PendingActions` already has any row for a meeting's
+`EventID` (the Calendar event's own unique ID, which every row in both
+`ProcessedMeetings` and `PendingActions` is keyed by) before creating more -
+regardless of what `ProcessedMeetings.Status` currently claims. That keeps
+things idempotent per-meeting even if status ever drifts out of sync (a
+manual edit, a future bug), not just against the specific race the lock
+covers. `dedupePendingActions()` is the one-off cleanup for duplicates that
+already existed before this guard was added.
+
 ## Files
 
 - `Code.gs` - backend: Sheet schema setup, `doGet()` web app entry point,

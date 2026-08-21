@@ -391,9 +391,26 @@ function createPendingActionsForExtractedMeetings() {
       return r.Status === "extracted";
     });
 
+    // Belt-and-suspenders on top of the lock: a meeting's EventID is its
+    // unique token, so if PendingActions already has ANY row for it - no
+    // matter what ProcessedMeetings.Status currently says - skip creating
+    // more. This keeps things idempotent even if status ever gets out of
+    // sync (a manual edit, a future bug, anything), not just against the
+    // exact race the lock covers.
+    const eventIdsWithPendingRows = {};
+    rowsToObjects_(pendingSheet).forEach(function (p) {
+      eventIdsWithPendingRows[p.EventID] = true;
+    });
+
     Logger.log("%s meeting(s) to turn into pending actions.", meetings.length);
 
     meetings.forEach(function (meeting) {
+      if (eventIdsWithPendingRows[meeting.EventID]) {
+        Logger.log('Skipping "%s" - PendingActions rows already exist for this meeting (EventID %s).', meeting.Title, meeting.EventID);
+        updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "rows_created");
+        return;
+      }
+
       var items;
       try {
         items = JSON.parse(meeting.ProposalsJson);
