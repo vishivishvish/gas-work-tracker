@@ -93,16 +93,29 @@ piece 4 is deployed.
 
 **Piece 4 (done): two-step approval web app.** `Code.gs`'s `doGet()` now
 routes on query params: a `?token=...` link (the one emailed per item) opens
-a page to accept as-is or edit text/owner - submitting only updates that
-item's `PendingActions` row to `approved`, never the board. A `?view=commit`
-page lists every `approved` item with a thread and sub-thread dropdown each
-(populated from the real board via `getBoardData()`); anything proposing a
-*new* thread or sub-thread starts pre-selected on "+ New..." so it's obvious
-rather than blending in, and can be switched to an existing one if the model
-guessed wrong, or skipped entirely via a per-item checkbox. Only clicking
-**Commit** calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
-existing names case-insensitively before creating anything new) and the
-existing `addItem()` to write to the Sheet, marking each row `committed`.
+a review page, and `?view=commit` opens the final placement review. Both
+share Index.html's visual language (same color tokens, Fraunces/Inter/IBM
+Plex Mono fonts) rather than looking like a bare utility form.
+
+On the `?token=...` page, "Edit before accepting" unlocks every field,
+including thread/sub-thread placement itself: a Thread dropdown (existing
+threads, plus "+ Add New Thread" which reveals a name box), then that
+thread's existing sub-threads in a second dropdown (plus its own "+ Add New
+Subthread", which reveals a name + tag box) - unless a brand-new thread was
+picked, in which case there's no existing list to show, so the sub-thread
+name box appears directly. Submitting only updates that item's
+`PendingActions` row (to `approved`, with whatever text/owner/placement was
+left in the fields) - never the board.
+
+The `?view=commit` page lists every `approved` item with the same cascading
+thread/sub-thread selectors, still defaulting to the LLM's (or your edited)
+proposal; anything proposing a *new* thread or sub-thread starts pre-selected
+on "+ New..." so it's obvious rather than blending in, and can be switched to
+an existing one if the model guessed wrong, or skipped entirely via a
+per-item checkbox. Only clicking **Commit** calls
+`findOrCreateThread_`/`findOrCreateSubThread_` (matching existing names
+case-insensitively before creating anything new) and the existing
+`addItem()` to write to the Sheet, marking each row `committed`.
 
 `runActionItemPipeline()` chains all four pieces (poll → extract → create
 pending rows → email) for the 15-minute trigger
