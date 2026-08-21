@@ -160,7 +160,26 @@ function installEditTrigger() {
 
 // ---- Web app entry point ----
 
-function doGet() {
+/**
+ * Routes to the action-item review/commit pages (see ActionItemExtraction.gs)
+ * when the request carries a `token` or `view=commit` param; otherwise
+ * serves the main board as before.
+ */
+function doGet(e) {
+  const params = (e && e.parameter) || {};
+
+  if (params.token) {
+    return HtmlService.createHtmlOutput(renderItemReviewPage_(params.token))
+      .setTitle("Review action item")
+      .addMetaTag("viewport", "width=device-width, initial-scale=1");
+  }
+
+  if (params.view === "commit") {
+    return HtmlService.createHtmlOutput(renderCommitPage_())
+      .setTitle("Review & Commit")
+      .addMetaTag("viewport", "width=device-width, initial-scale=1");
+  }
+
   return HtmlService.createHtmlOutputFromFile("Index")
     .setTitle("Vishnu's Landscape")
     .addMetaTag("viewport", "width=device-width, initial-scale=1");

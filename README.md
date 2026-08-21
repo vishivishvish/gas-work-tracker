@@ -91,15 +91,25 @@ meeting to `emailed`. That link points at a `WEBAPP_URL` Script Property that
 stays unset (and email-sending stays paused) until the approval web app in
 piece 4 is deployed.
 
-**Piece 4 (not started): two-step approval.** Accepting/editing an item in
-the web app only marks its `PendingActions` row approved - it still won't
-touch the board, since thread/sub-thread placement is the part most likely to
-need a human check. A separate "Review & Commit" screen will list all
-approved items grouped by their proposed thread/sub-thread, flag anything
-that would create a *new* thread or sub-thread, and let that placement be
-overridden from a dropdown of real existing threads/sub-threads before a
-final Commit writes everything to the Sheet via the same
-`addThread`/`addSubThread`/`addItem` functions the app already uses.
+**Piece 4 (done): two-step approval web app.** `Code.gs`'s `doGet()` now
+routes on query params: a `?token=...` link (the one emailed per item) opens
+a page to accept as-is or edit text/owner - submitting only updates that
+item's `PendingActions` row to `approved`, never the board. A `?view=commit`
+page lists every `approved` item with a thread and sub-thread dropdown each
+(populated from the real board via `getBoardData()`); anything proposing a
+*new* thread or sub-thread starts pre-selected on "+ New..." so it's obvious
+rather than blending in, and can be switched to an existing one if the model
+guessed wrong, or skipped entirely via a per-item checkbox. Only clicking
+**Commit** calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
+existing names case-insensitively before creating anything new) and the
+existing `addItem()` to write to the Sheet, marking each row `committed`.
+
+`runActionItemPipeline()` chains all four pieces (poll → extract → create
+pending rows → email) for the 15-minute trigger
+(`installActionItemPipelineTrigger()` installs it, replacing the piece-1-only
+`installMeetingPollTrigger()`). Setup: set `NIM_API_KEY` and `NIM_MODEL` in
+Script Properties, deploy the web app, set `WEBAPP_URL` in Script Properties
+to the deployed URL, then run `installActionItemPipelineTrigger()` once.
 
 ## Files
 
