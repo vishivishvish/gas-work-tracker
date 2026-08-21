@@ -805,9 +805,19 @@
     );
   }
 
+  // Opening date == closing date means still open/WIP (that's the convention
+  // used when an item is first added); anything else means it actually
+  // closed on that date. Independent of the checked/strikethrough state.
+  function formatItemDateRange(openDate, closeDate) {
+    if (!openDate) return "";
+    if (!closeDate || closeDate === openDate) return "Opened " + openDate + " · WIP";
+    return "Opened " + openDate + " → Closed " + closeDate;
+  }
+
   function renderItem(i, subThreadId) {
     return (
-      '<div class="action-item" data-item-id="' + i.itemId + '">' +
+      '<div class="action-item" data-item-id="' + i.itemId + '" ' +
+        'data-open-date="' + escapeHtml(i.openDate || "") + '" data-close-date="' + escapeHtml(i.closeDate || "") + '">' +
         '<span class="action-letter">' + i.letter + "</span>" +
         '<div class="action-check' + (i.checked ? " checked" : "") + '" data-action="toggle-item" data-item-id="' + i.itemId + '">' +
           (i.checked ? "✓" : "") +
@@ -815,7 +825,7 @@
         '<div style="flex:1; min-width:0;">' +
           '<div class="action-text' + (i.checked ? " checked" : "") + '" data-action="edit-item" data-item-id="' + i.itemId + '">' + escapeHtml(i.text) + "</div>" +
           (i.owner ? '<div class="action-owner">' + escapeHtml(i.owner) + "</div>" : "") +
-          (i.date ? '<div class="action-date">' + escapeHtml(i.date) + "</div>" : "") +
+          (i.openDate ? '<div class="action-date">' + escapeHtml(formatItemDateRange(i.openDate, i.closeDate)) + "</div>" : "") +
         "</div>" +
         '<span class="icon-btn delete-item" data-action="delete-item" data-item-id="' + i.itemId + '" title="Delete step">✕</span>' +
       "</div>"
@@ -844,7 +854,7 @@
           map[owner].push({
             itemId: i.itemId,
             text: i.text,
-            date: i.date,
+            date: formatItemDateRange(i.openDate, i.closeDate),
             threadName: t.name,
             threadInk: palette.ink,
             threadTag: palette.tag,
@@ -1059,9 +1069,10 @@
       var text = prompt("New step:");
       if (text) {
         var owner = prompt("Waiting on / owner (optional):") || "";
-        var itemDate = prompt("Date relevant (optional):") || "";
+        var openDate = prompt("Opening date (YYYY-MM-DD, optional):") || "";
+        var closeDate = prompt("Closing date (same as opening = still open/WIP; change once it's actually closed):", openDate) || "";
         setSyncing(true);
-        google.script.run.withSuccessHandler(loadBoard).addItem(subId, text, owner, itemDate);
+        google.script.run.withSuccessHandler(loadBoard).addItem(subId, text, owner, openDate, closeDate);
       }
     } else if (action === "toggle-item") {
       var itemId = el.getAttribute("data-item-id");
@@ -1072,14 +1083,15 @@
       google.script.run.withFailureHandler(function (err) { console.error(err); loadBoard(); }).toggleItem(itemId);
     } else if (action === "edit-item") {
       var iid = el.getAttribute("data-item-id");
+      var itemEl = el.closest(".action-item");
       var ownerEl = el.parentElement.querySelector(".action-owner");
-      var itemDateEl = el.parentElement.querySelector(".action-date");
       var newText = prompt("Edit step:", el.textContent);
       if (newText !== null) {
         var newOwner = prompt("Waiting on / owner (blank to clear):", ownerEl ? ownerEl.textContent : "") || "";
-        var newItemDate = prompt("Date relevant (blank to clear):", itemDateEl ? itemDateEl.textContent : "") || "";
+        var newOpenDate = prompt("Opening date (blank to clear):", itemEl ? itemEl.getAttribute("data-open-date") : "") || "";
+        var newCloseDate = prompt("Closing date (blank to clear):", itemEl ? itemEl.getAttribute("data-close-date") : "") || "";
         setSyncing(true);
-        google.script.run.withSuccessHandler(loadBoard).editItem(iid, newText, newOwner, newItemDate);
+        google.script.run.withSuccessHandler(loadBoard).editItem(iid, newText, newOwner, newOpenDate, newCloseDate);
       }
     } else if (action === "delete-item") {
       var iid2 = el.getAttribute("data-item-id");

@@ -31,9 +31,12 @@ one place that should always reflect what the app actually does today.
 - **Sub-thread drag-and-drop reordering** - drag a sub-thread's header
   left or right to reorder it within its own thread (cross-thread drops are
   blocked); persisted via `reorderSubThreads()`.
-- **Optional dates** - threads, sub-threads, and items can each carry an
-  optional date (opened date for threads/sub-threads, "last relevant" date
-  for items), set via the same prompts used for naming.
+- **Optional dates** - threads and sub-threads can each carry an optional
+  opened date, set via the same prompts used for naming. Items carry two
+  dates: an opening date and a closing date - leaving closing date equal to
+  opening date marks an item still open/WIP, and updating it to the real
+  date it closed marks it done. This is independent of the checkbox/
+  strikethrough, which is just a visual toggle.
 - **Per-thread color picker** - each thread has a color-picker swatch
   offering 31 light, named colors ordered in a VIBGYOR gradient (violet
   through red, with neutrals at the end); hovering a swatch shows its name.
@@ -65,10 +68,19 @@ a new `ProcessedMeetings` tab on the same Sheet.
 **Piece 1 (done): poll for the Gemini notes doc.** Every meeting on the
 calendar gets Gemini-generated notes attached to its Calendar event once the
 meeting ends (timing varies with meeting length). `pollMeetingNotes()` runs
-on a 15-minute time-driven trigger, sweeps recent events via the Calendar
+on a 15-minute time-driven trigger, sweeps events from the last
+`MEETING_LOOKBACK_HOURS` (24) hours - a sliding window recomputed from "now"
+on every run, not tracked against the previous run - via the Calendar
 Advanced Service, and marks each one `waiting` or `notes_fetched` in
-`ProcessedMeetings` depending on whether that attachment has shown up yet -
-so a meeting is only ever read once, whenever its notes actually land.
+`ProcessedMeetings` depending on whether that attachment has shown up yet, so
+a meeting is only ever read once, whenever its notes actually land. Once a
+meeting falls outside that 24-hour window it's no longer checked at all, so a
+meeting whose notes take longer than that to appear (or one from further
+back than 24 hours ago that was never caught) won't be picked up
+automatically - bump `MEETING_LOOKBACK_HOURS` and run `pollMeetingNotes`
+manually once to backfill a case like that. The notes doc's own creation
+date (its file metadata, not the calendar event) is captured here too, as
+`NotesDate` - this becomes every action item's default opening date.
 
 **Piece 2 (done): propose action items via NIM.** For every `notes_fetched`
 meeting, `extractActionItemsForFetchedMeetings()` sends its notes text, plus
@@ -83,46 +95,44 @@ Nothing on the board changes yet.
 **Piece 3 (done): pending-approval tab + email.**
 `createPendingActionsForExtractedMeetings()` expands each `extracted`
 meeting's `ProposalsJson` into one row per item on a new `PendingActions` tab
-(each row gets its own review token), advancing the meeting to
-`rows_created`. `sendPendingActionEmails()` then emails one HTML summary per
-meeting - item text, owner, proposed thread/sub-thread (flagged if it'd be
-new), and the LLM's rationale - with a per-item "Review" link, advancing the
-meeting to `emailed`. That link points at a `WEBAPP_URL` Script Property that
-stays unset (and email-sending stays paused) until the approval web app in
-piece 4 is deployed.
+(each row gets its own review token and the meeting's `NotesDate` as its
+default `OpenDate`), advancing the meeting to `rows_created`.
+`sendPendingActionEmails()` then emails one HTML summary per meeting - item
+text, owner, date, proposed thread/sub-thread (flagged if it'd be new), and
+the LLM's rationale - with a per-item "Review" link, advancing the meeting to
+`emailed`. That link points at whatever URL this project is currently
+deployed at (`getWebAppBaseUrl_()`, via `ScriptApp.getService().getUrl()`) -
+there's no separate Script Property to keep in sync with the deployment, and
+if the project hasn't been deployed as a web app yet, email-sending just
+stays paused until it has been.
 
-**Piece 4 (done): two-step approval web app.** `Code.gs`'s `doGet()` now
-routes on query params: a `?token=...` link (the one emailed per item) opens
-a review page, and `?view=commit` opens the final placement review. Both
-share Index.html's visual language (same color tokens, Fraunces/Inter/IBM
-Plex Mono fonts) rather than looking like a bare utility form.
+**Piece 4 (done): direct-commit approval page.** `Code.gs`'s `doGet()` routes
+a `?token=...` request (the link emailed per item) to a review page built in
+`ActionItemExtraction.gs`, sharing Index.html's visual language (same color
+tokens, Fraunces/Inter/IBM Plex Mono fonts) rather than looking like a bare
+utility form. "Edit before accepting" unlocks every field - text, owner,
+opening date, closing date (both `<input type="date">`, defaulting to the
+meeting's notes date and to each other, matching the open==close means
+still-open/WIP convention), and thread/sub-thread placement itself: a Thread
+dropdown (existing threads, plus "+ Add New Thread" which reveals a name
+box), then that thread's existing sub-threads in a second dropdown (plus its
+own "+ Add New Subthread", which reveals a name + tag box) - unless a
+brand-new thread was picked, in which case there's no existing list to show,
+so the sub-thread name box appears directly.
 
-On the `?token=...` page, "Edit before accepting" unlocks every field,
-including thread/sub-thread placement itself: a Thread dropdown (existing
-threads, plus "+ Add New Thread" which reveals a name box), then that
-thread's existing sub-threads in a second dropdown (plus its own "+ Add New
-Subthread", which reveals a name + tag box) - unless a brand-new thread was
-picked, in which case there's no existing list to show, so the sub-thread
-name box appears directly. Submitting only updates that item's
-`PendingActions` row (to `approved`, with whatever text/owner/placement was
-left in the fields) - never the board.
-
-The `?view=commit` page lists every `approved` item with the same cascading
-thread/sub-thread selectors, still defaulting to the LLM's (or your edited)
-proposal; anything proposing a *new* thread or sub-thread starts pre-selected
-on "+ New..." so it's obvious rather than blending in, and can be switched to
-an existing one if the model guessed wrong, or skipped entirely via a
-per-item checkbox. Only clicking **Commit** calls
-`findOrCreateThread_`/`findOrCreateSubThread_` (matching existing names
-case-insensitively before creating anything new) and the existing
-`addItem()` to write to the Sheet, marking each row `committed`.
+Submitting calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
+existing names case-insensitively before creating anything new) and the
+existing `addItem()` to commit straight to the board, marks the
+`PendingActions` row `committed`, and redirects the browser to the Work
+Tracker itself - there's no separate "Review & Commit" screen, since every
+field including placement is already editable on this one page.
 
 `runActionItemPipeline()` chains all four pieces (poll → extract → create
 pending rows → email) for the 15-minute trigger
 (`installActionItemPipelineTrigger()` installs it, replacing the piece-1-only
 `installMeetingPollTrigger()`). Setup: set `NIM_API_KEY` and `NIM_MODEL` in
-Script Properties, deploy the web app, set `WEBAPP_URL` in Script Properties
-to the deployed URL, then run `installActionItemPipelineTrigger()` once.
+Script Properties, deploy the web app, then run
+`installActionItemPipelineTrigger()` once.
 
 ## Files
 
@@ -139,7 +149,7 @@ to the deployed URL, then run `installActionItemPipelineTrigger()` once.
 
 - `Threads`: ThreadID, Name, Order, Collapsed, DateOpened, Color
 - `SubThreads`: SubThreadID, ThreadID, Name, Tag, Order, Collapsed, DateOpened
-- `Items`: ItemID, SubThreadID, Text, Checked, Owner, Order, Date
+- `Items`: ItemID, SubThreadID, Text, Checked, Owner, Order, OpenDate, CloseDate
 - `Meta`: Key, Value (holds `LastModified`, bumped by every write)
 
 Letters (A, B, C...) for action steps and numbers (1, 2, 3...) for threads
@@ -167,6 +177,13 @@ between Drive folders at any time without breaking anything.
 6. *If you had this project set up before per-thread `Color` existed*,
    select `migrateAddThreadColor` in the function dropdown and click **Run**
    once, for the same reason as above.
+6b. *If you had this project set up before items had separate opening/closing
+   dates (a single `Date` column instead)*, select
+   `migrateItemDatesToOpenClose` in the function dropdown and click **Run**
+   once - it renames `Date` to `OpenDate` in place (keeping existing values)
+   and backfills `CloseDate` to match `OpenDate` for every existing item, so
+   they all start out looking "still open," same as a freshly-added item
+   would. Brand-new setups already get both columns from `setupSheets`.
 7. *(Optional, recommended)* Set up direct-edit sync: select `installEditTrigger`
    in the function dropdown and click **Run**. (Not done via the Triggers UI's
    "Add Trigger" dialog - its "From spreadsheet" event source is only offered
@@ -210,11 +227,16 @@ is scoped to one thread at a time.
 
 ## Dates
 
-Threads, sub-threads, and items each carry an optional date (when the
-thread/sub-thread was opened, or when an item was last relevant). They're
-set through the same prompts used for naming: adding or renaming a thread
-or sub-thread, and adding or editing an item, all ask for a date as one of
-the sequential prompts (leave blank to clear it).
+Threads and sub-threads each carry an optional opened date, set through the
+same prompts used for naming (leave blank to clear it).
+
+Items carry two dates - opening and closing - both asked for (as sequential
+prompts, closing pre-filled with whatever was just typed for opening) when
+adding or editing an item. Leaving closing date equal to opening date means
+the item is still open/WIP; once it's actually done, edit the item and change
+the closing date to the real date it closed. This is separate from the
+checkbox/strikethrough, which is just a visual "done" toggle - the two dates
+are the source of truth for when something opened and closed.
 
 ## Thread colors
 

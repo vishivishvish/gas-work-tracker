@@ -83,7 +83,7 @@ function setupSheets() {
 
   ensureSheet_(ss, SHEET_NAMES.THREADS, ["ThreadID", "Name", "Order", "Collapsed", "DateOpened", "Color"]);
   ensureSheet_(ss, SHEET_NAMES.SUBTHREADS, ["SubThreadID", "ThreadID", "Name", "Tag", "Order", "Collapsed", "DateOpened"]);
-  ensureSheet_(ss, SHEET_NAMES.ITEMS, ["ItemID", "SubThreadID", "Text", "Checked", "Owner", "Order", "Date"]);
+  ensureSheet_(ss, SHEET_NAMES.ITEMS, ["ItemID", "SubThreadID", "Text", "Checked", "Owner", "Order", "OpenDate", "CloseDate"]);
 
   const metaSheet = ensureSheet_(ss, SHEET_NAMES.META, ["Key", "Value"]);
   if (metaSheet.getRange("A2").getValue() !== "LastModified") {
@@ -139,6 +139,37 @@ function migrateAddThreadColor() {
 }
 
 /**
+ * One-time migration for Sheets created before items had separate opening
+ * and closing dates (back when there was just one "Date" column). Renames
+ * "Date" to "OpenDate" in place (keeping its existing values and column
+ * position), adds "CloseDate" if missing, then backfills CloseDate to match
+ * OpenDate for any row that doesn't have one yet - same convention as a
+ * freshly-opened item (opening date == closing date means still open/WIP).
+ * Safe to run multiple times.
+ */
+function migrateItemDatesToOpenClose() {
+  const sheet = getSheet_(SHEET_NAMES.ITEMS);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const dateCol = headers.indexOf("Date");
+  if (dateCol !== -1 && headers.indexOf("OpenDate") === -1) {
+    sheet.getRange(1, dateCol + 1).setValue("OpenDate");
+  }
+  ensureColumn_(sheet, "OpenDate");
+  ensureColumn_(sheet, "CloseDate");
+
+  const data = sheet.getDataRange().getValues();
+  const newHeaders = data[0];
+  const openCol = newHeaders.indexOf("OpenDate");
+  const closeCol = newHeaders.indexOf("CloseDate");
+  for (var r = 1; r < data.length; r++) {
+    if (!data[r][closeCol] && data[r][openCol]) {
+      sheet.getRange(r + 1, closeCol + 1).setValue(data[r][openCol]);
+    }
+  }
+  Logger.log("Items now have OpenDate/CloseDate (backfilled from the old Date column).");
+}
+
+/**
  * Installs (or reinstalls) the onEdit trigger for direct-edit sync. Run this
  * once manually from the function dropdown after setupSheets(). Done in
  * code rather than via the Triggers UI because this is a standalone script:
@@ -161,9 +192,8 @@ function installEditTrigger() {
 // ---- Web app entry point ----
 
 /**
- * Routes to the action-item review/commit pages (see ActionItemExtraction.gs)
- * when the request carries a `token` or `view=commit` param; otherwise
- * serves the main board as before.
+ * Routes to the action-item review page (see ActionItemExtraction.gs) when
+ * the request carries a `token` param; otherwise serves the main board.
  */
 function doGet(e) {
   const params = (e && e.parameter) || {};
@@ -171,12 +201,6 @@ function doGet(e) {
   if (params.token) {
     return HtmlService.createHtmlOutput(renderItemReviewPage_(params.token))
       .setTitle("Review action item")
-      .addMetaTag("viewport", "width=device-width, initial-scale=1");
-  }
-
-  if (params.view === "commit") {
-    return HtmlService.createHtmlOutput(renderCommitPage_())
-      .setTitle("Review & Commit")
       .addMetaTag("viewport", "width=device-width, initial-scale=1");
   }
 
@@ -300,7 +324,8 @@ function getBoardData() {
               text: i.Text,
               checked: !!i.Checked,
               owner: i.Owner || "",
-              date: formatDateValue_(i.Date),
+              openDate: formatDateValue_(i.OpenDate),
+              closeDate: formatDateValue_(i.CloseDate),
             };
           });
         return {
@@ -428,19 +453,20 @@ function deleteSubThread(subThreadId, skipBump) {
 
 // ---- Writes: items ----
 
-function addItem(subThreadId, text, owner, date) {
+function addItem(subThreadId, text, owner, openDate, closeDate) {
   const sheet = getSheet_(SHEET_NAMES.ITEMS);
   const id = Utilities.getUuid();
-  sheet.appendRow([id, subThreadId, text, false, owner || "", sheet.getLastRow(), date || ""]);
+  sheet.appendRow([id, subThreadId, text, false, owner || "", sheet.getLastRow(), openDate || "", closeDate || ""]);
   bumpLastModified_();
   return id;
 }
 
-function editItem(itemId, newText, newOwner, newDate) {
+function editItem(itemId, newText, newOwner, newOpenDate, newCloseDate) {
   const sheet = getSheet_(SHEET_NAMES.ITEMS);
   updateCell_(sheet, "ItemID", itemId, "Text", newText);
   updateCell_(sheet, "ItemID", itemId, "Owner", newOwner || "");
-  if (newDate !== undefined) updateCell_(sheet, "ItemID", itemId, "Date", newDate || "");
+  if (newOpenDate !== undefined) updateCell_(sheet, "ItemID", itemId, "OpenDate", newOpenDate || "");
+  if (newCloseDate !== undefined) updateCell_(sheet, "ItemID", itemId, "CloseDate", newCloseDate || "");
   bumpLastModified_();
 }
 

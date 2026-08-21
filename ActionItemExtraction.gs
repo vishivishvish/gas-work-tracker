@@ -13,13 +13,12 @@
  * Piece 3/4: expand those proposals into a `PendingActions` tab (one row per
  * item, each with its own review token) and email a review link per item.
  *
- * Piece 4/4: the two-step approval web app, routed through Code.gs's doGet.
- * A `?token=...` link (from the email) opens a page to accept-as-is or edit
- * an item's text/owner - this only updates the PendingActions row. A
- * `?view=commit` page then lists every approved item, lets thread/sub-thread
- * placement be reviewed/overridden (new-thread/new-sub-thread proposals are
- * flagged), and only on Commit calls the same addThread/addSubThread/addItem
- * functions Code.gs already uses to write to the board.
+ * Piece 4/4: the approval web app, routed through Code.gs's doGet. A
+ * `?token=...` link (from the email) opens a page to accept-as-is or edit
+ * everything about the item - text, owner, opening/closing date, and the
+ * thread/sub-thread it lands in - and submitting commits it straight to the
+ * board via the same addThread/addSubThread/addItem functions Code.gs
+ * already uses, then redirects to the Work Tracker itself.
  *
  * Requires the advanced "Google Calendar API" service (Services > + >
  * Google Calendar API) - same as the spike script.
@@ -41,15 +40,47 @@ const NIM_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 function ensureActionItemSheets_() {
   const ss = SpreadsheetApp.openById(getSheetId_());
   ensureSheet_(ss, ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS, [
-    "EventID", "Title", "Status", "FirstSeenAt", "LastCheckedAt", "NotesDocId", "ProposalsJson",
+    "EventID", "Title", "Status", "FirstSeenAt", "LastCheckedAt", "NotesDocId", "ProposalsJson", "NotesDate",
   ]);
   ensureColumn_(getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS), "ProposalsJson");
+  ensureColumn_(getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS), "NotesDate");
 
   ensureSheet_(ss, ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS, [
-    "Token", "EventID", "MeetingTitle", "Text", "Owner",
+    "Token", "EventID", "MeetingTitle", "Text", "Owner", "OpenDate",
     "ThreadName", "IsNewThread", "SubThreadName", "IsNewSubThread", "SubThreadTag",
     "Rationale", "Status", "CreatedAt",
   ]);
+  ensureColumn_(getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS), "OpenDate");
+}
+
+/**
+ * Appends a row built from a {headerName: value} map rather than a fixed
+ * positional array, reading the sheet's actual current header order. Safer
+ * than a raw appendRow([...]) once ensureColumn_ has bolted extra columns
+ * onto an existing sheet in whatever order they were added, which won't
+ * necessarily match a freshly-created sheet's declared header list.
+ */
+function appendRowByHeaders_(sheet, valuesByHeader) {
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const row = headers.map(function (h) {
+    return valuesByHeader.hasOwnProperty(h) ? valuesByHeader[h] : "";
+  });
+  sheet.appendRow(row);
+}
+
+/**
+ * Returns the URL of the currently-active web app deployment, or null if
+ * this project has never been deployed as one yet. Used both for the
+ * post-commit redirect on the review page and for the review email's links,
+ * so there's no separate "WEBAPP_URL" Script Property to keep in sync.
+ */
+function getWebAppBaseUrl_() {
+  try {
+    return ScriptApp.getService().getUrl();
+  } catch (err) {
+    return null;
+  }
 }
 
 /**
@@ -109,13 +140,14 @@ function pollMeetingNotes() {
     const notesDoc = findNotesDocAttachment_(ev);
 
     if (!notesDoc) {
-      upsertProcessedMeeting_(sheet, existing, ev, "waiting", "");
+      upsertProcessedMeeting_(sheet, existing, ev, "waiting", "", "");
       return;
     }
 
-    upsertProcessedMeeting_(sheet, existing, ev, "notes_fetched", notesDoc.fileId);
+    const notesDate = getNotesDocDate_(notesDoc.fileId);
+    upsertProcessedMeeting_(sheet, existing, ev, "notes_fetched", notesDoc.fileId, notesDate);
     foundCount++;
-    Logger.log('Notes doc found for "%s" (event %s): fileId=%s', ev.summary, ev.id, notesDoc.fileId);
+    Logger.log('Notes doc found for "%s" (event %s): fileId=%s, date=%s', ev.summary, ev.id, notesDoc.fileId, notesDate);
   });
 
   Logger.log("Poll complete. %s event(s) newly notes_fetched.", foundCount);
@@ -137,14 +169,32 @@ function findNotesDocAttachment_(ev) {
   return null;
 }
 
-function upsertProcessedMeeting_(sheet, existing, ev, status, notesDocId) {
+/**
+ * The notes doc's own creation date (YYYY-MM-DD), used as every action
+ * item's default opening date.
+ */
+function getNotesDocDate_(fileId) {
+  const created = DriveApp.getFileById(fileId).getDateCreated();
+  return Utilities.formatDate(created, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+function upsertProcessedMeeting_(sheet, existing, ev, status, notesDocId, notesDate) {
   const now = new Date().getTime();
   if (existing) {
     updateCell_(sheet, "EventID", ev.id, "Status", status);
     updateCell_(sheet, "EventID", ev.id, "LastCheckedAt", now);
     if (notesDocId) updateCell_(sheet, "EventID", ev.id, "NotesDocId", notesDocId);
+    if (notesDate) updateCell_(sheet, "EventID", ev.id, "NotesDate", notesDate);
   } else {
-    sheet.appendRow([ev.id, ev.summary || "", status, now, now, notesDocId || ""]);
+    appendRowByHeaders_(sheet, {
+      EventID: ev.id,
+      Title: ev.summary || "",
+      Status: status,
+      FirstSeenAt: now,
+      LastCheckedAt: now,
+      NotesDocId: notesDocId || "",
+      NotesDate: notesDate || "",
+    });
   }
 }
 
@@ -327,21 +377,22 @@ function createPendingActionsForExtractedMeetings() {
 
     const now = new Date().getTime();
     items.forEach(function (item) {
-      pendingSheet.appendRow([
-        Utilities.getUuid(),
-        meeting.EventID,
-        meeting.Title,
-        item.text || "",
-        item.owner || "",
-        item.threadName || "",
-        !!item.isNewThread,
-        item.subThreadName || "",
-        !!item.isNewSubThread,
-        item.subThreadTag || "",
-        item.rationale || "",
-        "proposed",
-        now,
-      ]);
+      appendRowByHeaders_(pendingSheet, {
+        Token: Utilities.getUuid(),
+        EventID: meeting.EventID,
+        MeetingTitle: meeting.Title,
+        Text: item.text || "",
+        Owner: item.owner || "",
+        OpenDate: meeting.NotesDate || "",
+        ThreadName: item.threadName || "",
+        IsNewThread: !!item.isNewThread,
+        SubThreadName: item.subThreadName || "",
+        IsNewSubThread: !!item.isNewSubThread,
+        SubThreadTag: item.subThreadTag || "",
+        Rationale: item.rationale || "",
+        Status: "proposed",
+        CreatedAt: now,
+      });
     });
 
     updateCell_(meetingsSheet, "EventID", meeting.EventID, "Status", "rows_created");
@@ -352,16 +403,15 @@ function createPendingActionsForExtractedMeetings() {
 /**
  * Sends one review email per "rows_created" meeting, listing its pending
  * items with a per-item review link, then advances the meeting to "emailed".
- * If WEBAPP_URL isn't set yet (the approval web app doesn't exist until
- * piece 4 is deployed), this logs a warning and leaves the meeting at
- * "rows_created" so it retries once WEBAPP_URL is set.
+ * If this project hasn't been deployed as a web app yet (no URL to link to),
+ * this logs a warning and leaves the meeting at "rows_created" so it retries
+ * once it has been.
  */
 function sendPendingActionEmails() {
   ensureActionItemSheets_();
-  const props = PropertiesService.getScriptProperties();
-  const webAppUrl = props.getProperty("WEBAPP_URL");
+  const webAppUrl = getWebAppBaseUrl_();
   if (!webAppUrl) {
-    Logger.log("WEBAPP_URL not set yet - skipping email send until the approval web app is deployed.");
+    Logger.log("No web app deployment found yet - skipping email send until this project is deployed.");
     return;
   }
 
@@ -405,6 +455,7 @@ function buildReviewEmailHtml_(meetingTitle, items, webAppUrl) {
         "<tr>" +
         "<td>" + escapeHtml_(item.Text) + "</td>" +
         "<td>" + escapeHtml_(item.Owner || "(unassigned)") + "</td>" +
+        "<td>" + escapeHtml_(item.OpenDate) + "</td>" +
         "<td>" + threadLabel + " &rsaquo; " + subThreadLabel + "</td>" +
         "<td><i>" + escapeHtml_(item.Rationale) + "</i></td>" +
         '<td><a href="' + reviewLink + '">Review</a></td>' +
@@ -416,12 +467,12 @@ function buildReviewEmailHtml_(meetingTitle, items, webAppUrl) {
   return (
     "<p>Proposed action items from <b>" + escapeHtml_(meetingTitle) + "</b>:</p>" +
     "<table border='1' cellpadding='6' cellspacing='0'>" +
-    "<tr><th>Item</th><th>Owner</th><th>Proposed thread &rsaquo; sub-thread</th><th>Why</th><th></th></tr>" +
+    "<tr><th>Item</th><th>Owner</th><th>Date</th><th>Proposed thread &rsaquo; sub-thread</th><th>Why</th><th></th></tr>" +
     rows +
     "</table>" +
-    "<p>Click Review on each item to accept it as-is or edit it. " +
-    "Thread/sub-thread placement isn't final yet - you'll get a separate " +
-    "chance to double-check and commit that before anything hits the board.</p>"
+    "<p>Click Review on each item to accept it as-is or edit anything about it - " +
+    "text, owner, dates, or thread/sub-thread placement. Submitting there commits " +
+    "it straight to the Work Tracker.</p>"
   );
 }
 
@@ -508,13 +559,16 @@ function htmlPage_(title, bodyHtml) {
 }
 
 /**
- * Step A page: shown when the email's per-item "Review" link is opened.
+ * Review page: shown when the email's per-item "Review" link is opened.
  * "Edit before accepting" unlocks every field, including thread/sub-thread
  * placement itself: pick an existing thread from a dropdown (with "+ Add New
  * Thread" as the last option, revealing a name box), then that thread's
  * existing sub-threads (with its own "+ Add New Subthread" option) - unless
  * a brand-new thread was picked, in which case there's nothing to list yet
- * so the sub-thread name box appears directly, no dropdown.
+ * so the sub-thread name box appears directly, no dropdown. Submitting
+ * commits straight to the board and redirects to the Work Tracker - there's
+ * no separate commit screen, since every field (including placement) is
+ * already editable right here.
  */
 function renderItemReviewPage_(token) {
   const row = getPendingActionRow_(token);
@@ -534,6 +588,7 @@ function renderItemReviewPage_(token) {
   const threadMatches = threadNames.indexOf(row.ThreadName) !== -1;
   const useNewThread = row.IsNewThread || !threadMatches;
   const useNewSubThread = useNewThread || row.IsNewSubThread;
+  const webAppUrl = getWebAppBaseUrl_() || "";
 
   const threadOptions = threadNames
     .map(function (name) {
@@ -558,6 +613,12 @@ function renderItemReviewPage_(token) {
 
     "<div class=\"field\"><label class=\"field-label\">Owner</label>" +
     "<input id=\"owner\" class=\"input\" type=\"text\" disabled value=\"" + escapeHtml_(row.Owner) + "\"></div>" +
+
+    "<div class=\"field\"><label class=\"field-label\">Opening date</label>" +
+    "<input id=\"openDate\" class=\"input\" type=\"date\" disabled value=\"" + escapeHtml_(row.OpenDate) + "\"></div>" +
+
+    "<div class=\"field\"><label class=\"field-label\">Closing date</label>" +
+    "<input id=\"closeDate\" class=\"input\" type=\"date\" disabled value=\"" + escapeHtml_(row.OpenDate) + "\"></div>" +
 
     "<div class=\"field\"><label class=\"field-label\">Thread" +
     (row.IsNewThread ? "<span class=\"flag-new\">proposed new</span>" : "") + "</label>" +
@@ -636,23 +697,28 @@ function renderItemReviewPage_(token) {
 
     "function toggleEdit(){" +
     "var isEdit=document.getElementById('decision').value==='edit';" +
-    "['text','owner','threadSelect','newThreadName','subThreadSelect','newSubThreadName','newSubThreadTag']" +
+    "['text','owner','openDate','closeDate','threadSelect','newThreadName','subThreadSelect','newSubThreadName','newSubThreadTag']" +
     ".forEach(function(id){document.getElementById(id).disabled=!isEdit;});" +
     "}" +
 
     "function submitDecision(){" +
-    "document.getElementById('result').innerText='Submitting...';" +
+    "document.getElementById('result').innerText='Committing...';" +
     "var isNewThread=document.getElementById('threadSelect').value==='__new__';" +
     "var isNewSubThread=isNewThread||document.getElementById('subThreadSelect').value==='__new__';" +
     "var threadName=isNewThread?document.getElementById('newThreadName').value:document.getElementById('threadSelect').value;" +
     "var subThreadName=isNewSubThread?document.getElementById('newSubThreadName').value:document.getElementById('subThreadSelect').value;" +
     "var subThreadTag=isNewSubThread?document.getElementById('newSubThreadTag').value:'';" +
     "google.script.run" +
-    ".withSuccessHandler(function(){document.getElementById('result').innerText='Done - marked approved. You can close this tab.';})" +
+    ".withSuccessHandler(function(){" +
+    "document.getElementById('result').innerText='Committed to your Work Tracker. Redirecting...';" +
+    (webAppUrl ? "top.location.href=" + JSON.stringify(webAppUrl) + ";" : "") +
+    "})" +
     ".withFailureHandler(function(err){document.getElementById('result').innerText='Error: '+err.message;})" +
     ".submitItemDecision(" + JSON.stringify(token) + "," +
     "document.getElementById('text').value," +
     "document.getElementById('owner').value," +
+    "document.getElementById('openDate').value," +
+    "document.getElementById('closeDate').value," +
     "threadName,isNewThread,subThreadName,isNewSubThread,subThreadTag);" +
     "}" +
     "</script>";
@@ -661,186 +727,24 @@ function renderItemReviewPage_(token) {
 }
 
 /**
- * Called from the Step A page. Fields always reflect the final intended
- * values (unedited fields simply still hold the original proposal), so no
- * decision branching is needed here - just write whatever was submitted.
- * Still only ever touches the PendingActions row, never the board.
+ * Called from the Review page's Submit. Fields always reflect the final
+ * intended values (unedited fields simply still hold the original
+ * proposal), so this just finds-or-creates the chosen thread/sub-thread and
+ * writes the item straight to the board via the same
+ * addThread/addSubThread/addItem functions Code.gs already uses, then marks
+ * the PendingActions row committed.
  */
-function submitItemDecision(token, text, owner, threadName, isNewThread, subThreadName, isNewSubThread, subThreadTag) {
+function submitItemDecision(token, text, owner, openDate, closeDate, threadName, isNewThread, subThreadName, isNewSubThread, subThreadTag) {
   const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
   const row = getPendingActionRow_(token);
   if (!row) throw new Error("Pending action not found.");
   if (row.Status !== "proposed") throw new Error("This item was already reviewed.");
 
-  updateCell_(sheet, "Token", token, "Text", text);
-  updateCell_(sheet, "Token", token, "Owner", owner);
-  updateCell_(sheet, "Token", token, "ThreadName", threadName);
-  updateCell_(sheet, "Token", token, "IsNewThread", isNewThread);
-  updateCell_(sheet, "Token", token, "SubThreadName", subThreadName);
-  updateCell_(sheet, "Token", token, "IsNewSubThread", isNewSubThread);
-  updateCell_(sheet, "Token", token, "SubThreadTag", subThreadTag);
-  updateCell_(sheet, "Token", token, "Status", "approved");
-}
+  const threadId = findOrCreateThread_(threadName);
+  const subThreadId = findOrCreateSubThread_(threadId, subThreadName, subThreadTag);
+  addItem(subThreadId, text, owner, openDate, closeDate || openDate);
 
-/**
- * Step B page: lists every "approved" item, grouped implicitly by letting
- * each row's thread/sub-thread selectors default to the LLM's proposal,
- * with new-thread/new-sub-thread proposals pre-selecting "+ New..." so
- * they're visually obvious rather than blending in with existing structure.
- */
-function renderCommitPage_() {
-  const board = getBoardData().board;
-  const approved = rowsToObjects_(getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS)).filter(function (r) {
-    return r.Status === "approved";
-  });
-
-  if (!approved.length) {
-    return htmlPage_("Review & Commit", "<p class=\"empty\">No approved items waiting to be committed right now.</p>");
-  }
-
-  const boardMap = {};
-  board.forEach(function (t) {
-    boardMap[t.name] = t.subthreads.map(function (s) {
-      return { name: s.name, tag: s.tag };
-    });
-  });
-  const threadNames = Object.keys(boardMap);
-
-  const itemsHtml = approved
-    .map(function (row) {
-      const threadMatches = threadNames.indexOf(row.ThreadName) !== -1;
-      const useNewThread = row.IsNewThread || !threadMatches;
-
-      const threadOptions = threadNames
-        .map(function (name) {
-          const selected = !useNewThread && name === row.ThreadName ? " selected" : "";
-          return "<option value=\"" + escapeHtml_(name) + "\"" + selected + ">" + escapeHtml_(name) + "</option>";
-        })
-        .join("");
-
-      return (
-        "<div class=\"item card\" data-token=\"" + escapeHtml_(row.Token) + "\" " +
-        "data-sub-name=\"" + escapeHtml_(row.SubThreadName) + "\" " +
-        "data-is-new-sub=\"" + (row.IsNewSubThread ? "1" : "0") + "\">" +
-        "<div class=\"meta\">" + escapeHtml_(row.MeetingTitle) + "</div>" +
-        "<p class=\"card-title\" style=\"font-size:16px;\">" + escapeHtml_(row.Text) +
-        "</p><p class=\"rationale\" style=\"margin-bottom:14px;\">Owner: " + escapeHtml_(row.Owner || "unassigned") + "</p>" +
-        "<p class=\"rationale\">" + escapeHtml_(row.Rationale) + "</p>" +
-
-        "<div class=\"field\"><label class=\"field-label\">Thread" +
-        (row.IsNewThread ? "<span class=\"flag-new\">proposed new</span>" : "") + "</label>" +
-        "<select class=\"threadSelect input\" onchange=\"onThreadChange(this)\">" +
-        threadOptions +
-        "<option value=\"__new__\"" + (useNewThread ? " selected" : "") + ">+ New thread...</option>" +
-        "</select>" +
-        "<input class=\"newThreadInput input\" type=\"text\" placeholder=\"New thread name\" " +
-        "value=\"" + escapeHtml_(row.ThreadName) + "\" style=\"display:" + (useNewThread ? "block" : "none") + ";margin-top:8px;\"></div>" +
-
-        "<div class=\"field\"><label class=\"field-label\">Sub-thread" +
-        (row.IsNewSubThread ? "<span class=\"flag-new\">proposed new</span>" : "") + "</label>" +
-        "<select class=\"subThreadSelect input\" onchange=\"onSubThreadChange(this)\"></select>" +
-        "<input class=\"newSubThreadInput input\" type=\"text\" placeholder=\"New sub-thread name\" " +
-        "value=\"" + escapeHtml_(row.SubThreadName) + "\" style=\"display:none;margin-top:8px;\">" +
-        "<input class=\"newSubThreadTag input\" type=\"text\" placeholder=\"Tag (optional)\" " +
-        "value=\"" + escapeHtml_(row.SubThreadTag) + "\" style=\"display:none;margin-top:8px;\"></div>" +
-
-        "<label class=\"checkbox-row\"><input type=\"checkbox\" class=\"skipCheckbox\"> Skip - don't add this item</label>" +
-        "</div>"
-      );
-    })
-    .join("");
-
-  const body =
-    "<p class=\"rationale\" style=\"margin-bottom:20px;\">" + approved.length + " item(s) approved and ready for placement review. " +
-    "Anything proposing a <b>new</b> thread or sub-thread starts pre-selected on \"+ New...\" " +
-    "so it stands out - double check those especially, and switch to an existing one from the " +
-    "dropdown if the model guessed wrong.</p>" +
-    itemsHtml +
-    "<button class=\"btn\" onclick=\"commitAll()\">Commit to board</button>" +
-    "<p id=\"result\" class=\"result\"></p>" +
-    "<script>" +
-    "var boardMap=" + JSON.stringify(boardMap) + ";" +
-    "function populateSubOptions(container,selectedSubName,isNewSub){" +
-    "var threadSelect=container.querySelector('.threadSelect');" +
-    "var subSelect=container.querySelector('.subThreadSelect');" +
-    "var threadVal=threadSelect.value;" +
-    "var subs=(threadVal==='__new__')?[]:(boardMap[threadVal]||[]);" +
-    "subSelect.innerHTML='';" +
-    "subs.forEach(function(s){" +
-    "var opt=document.createElement('option');opt.value=s.name;opt.textContent=s.name;" +
-    "if(!isNewSub&&s.name===selectedSubName)opt.selected=true;" +
-    "subSelect.appendChild(opt);});" +
-    "var newOpt=document.createElement('option');newOpt.value='__new__';newOpt.textContent='+ New sub-thread...';" +
-    "var subExists=subs.some(function(s){return s.name===selectedSubName;});" +
-    "if(isNewSub||!subExists)newOpt.selected=true;" +
-    "subSelect.appendChild(newOpt);" +
-    "onSubThreadChange(subSelect);" +
-    "}" +
-    "function onThreadChange(select){" +
-    "var container=select.closest('.item');" +
-    "container.querySelector('.newThreadInput').style.display=(select.value==='__new__')?'block':'none';" +
-    "populateSubOptions(container,container.dataset.subName,container.dataset.isNewSub==='1');" +
-    "}" +
-    "function onSubThreadChange(select){" +
-    "var container=select.closest('.item');" +
-    "var isNew=select.value==='__new__';" +
-    "container.querySelector('.newSubThreadInput').style.display=isNew?'block':'none';" +
-    "container.querySelector('.newSubThreadTag').style.display=isNew?'block':'none';" +
-    "}" +
-    "document.querySelectorAll('.item').forEach(function(container){" +
-    "populateSubOptions(container,container.dataset.subName,container.dataset.isNewSub==='1');" +
-    "});" +
-    "function commitAll(){" +
-    "var decisions=Array.from(document.querySelectorAll('.item')).map(function(container){" +
-    "var skip=container.querySelector('.skipCheckbox').checked;" +
-    "var threadSelect=container.querySelector('.threadSelect');" +
-    "var subSelect=container.querySelector('.subThreadSelect');" +
-    "var isNewThread=threadSelect.value==='__new__';" +
-    "var isNewSubThread=subSelect.value==='__new__';" +
-    "return{" +
-    "token:container.dataset.token," +
-    "skip:skip," +
-    "threadName:isNewThread?container.querySelector('.newThreadInput').value:threadSelect.value," +
-    "subThreadName:isNewSubThread?container.querySelector('.newSubThreadInput').value:subSelect.value," +
-    "subThreadTag:isNewSubThread?container.querySelector('.newSubThreadTag').value:''" +
-    "};});" +
-    "document.getElementById('result').innerText='Committing...';" +
-    "google.script.run" +
-    ".withSuccessHandler(function(count){document.getElementById('result').innerText='Committed '+count+' item(s). You can close this tab.';})" +
-    ".withFailureHandler(function(err){document.getElementById('result').innerText='Error: '+err.message;})" +
-    ".commitApprovedActions(decisions);" +
-    "}" +
-    "</script>";
-
-  return htmlPage_("Review & Commit", body);
-}
-
-/**
- * Called from the Step B page. For each decision: skip (mark rejected) or
- * find-or-create the chosen thread/sub-thread and add the item via the same
- * addThread/addSubThread/addItem functions the main board app uses.
- */
-function commitApprovedActions(decisions) {
-  const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
-  var committedCount = 0;
-
-  decisions.forEach(function (d) {
-    const row = getPendingActionRow_(d.token);
-    if (!row || row.Status !== "approved") return;
-
-    if (d.skip) {
-      updateCell_(sheet, "Token", d.token, "Status", "rejected");
-      return;
-    }
-
-    const threadId = findOrCreateThread_(d.threadName);
-    const subThreadId = findOrCreateSubThread_(threadId, d.subThreadName, d.subThreadTag);
-    addItem(subThreadId, row.Text, row.Owner, "");
-    updateCell_(sheet, "Token", d.token, "Status", "committed");
-    committedCount++;
-  });
-
-  return committedCount;
+  updateCell_(sheet, "Token", token, "Status", "committed");
 }
 
 function findOrCreateThread_(name) {
