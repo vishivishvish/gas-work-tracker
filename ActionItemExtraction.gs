@@ -155,6 +155,7 @@ function getNotesDocText_(fileId) {
  * before wiring up the NIM call.
  */
 function debugPrintFetchedNotes() {
+  ensureActionItemSheets_();
   const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
   const rows = rowsToObjects_(sheet).filter(function (r) {
     return r.Status === "notes_fetched";
@@ -270,6 +271,7 @@ function parseActionItemsJson_(content) {
  * next manual run (or future scheduled run) retries them.
  */
 function extractActionItemsForFetchedMeetings() {
+  ensureActionItemSheets_();
   const sheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
   const rows = rowsToObjects_(sheet).filter(function (r) {
     return r.Status === "notes_fetched";
@@ -299,6 +301,7 @@ function extractActionItemsForFetchedMeetings() {
  * leaves a meeting stuck between "some rows written" and "no rows written".
  */
 function createPendingActionsForExtractedMeetings() {
+  ensureActionItemSheets_();
   const meetingsSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PROCESSED_MEETINGS);
   const pendingSheet = getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS);
   const meetings = rowsToObjects_(meetingsSheet).filter(function (r) {
@@ -348,6 +351,7 @@ function createPendingActionsForExtractedMeetings() {
  * "rows_created" so it retries once WEBAPP_URL is set.
  */
 function sendPendingActionEmails() {
+  ensureActionItemSheets_();
   const props = PropertiesService.getScriptProperties();
   const webAppUrl = props.getProperty("WEBAPP_URL");
   if (!webAppUrl) {
