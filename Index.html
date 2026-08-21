@@ -486,6 +486,95 @@
   }
   .tab-btn:hover { color: var(--canvas-ink); }
   .tab-btn.active { color: var(--canvas-ink); border-bottom-color: var(--amber); }
+  .proposals-count-badge {
+    display: inline-block;
+    background: var(--amber);
+    color: var(--paper);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 8px;
+    padding: 1px 6px;
+    margin-left: 6px;
+  }
+
+  .proposal-card {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 2px rgba(31,41,55,0.04);
+  }
+  .proposal-meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .proposal-field { margin-bottom: 14px; }
+  .proposal-field label {
+    display: block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  .proposal-flag-new {
+    display: inline-block;
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 5px;
+    padding: 2px 6px;
+    margin-left: 6px;
+  }
+  .proposal-input {
+    width: 100%;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: var(--ink);
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 11px;
+  }
+  .proposal-input.small-gap { margin-top: 8px; }
+  .proposal-row-half { display: flex; gap: 12px; }
+  .proposal-row-half > .proposal-field { flex: 1; min-width: 0; }
+  .proposal-rationale { font-style: italic; color: var(--ink-faint); font-size: 13px; margin: 4px 0 0; }
+  .proposal-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .proposal-commit-btn {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    color: #fff;
+    background: var(--amber);
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    cursor: pointer;
+  }
+  .proposal-commit-btn:hover { opacity: 0.92; }
+  .proposal-commit-btn:disabled { opacity: 0.5; cursor: default; }
+  .proposal-dismiss-btn {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--danger);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 18px;
+    cursor: pointer;
+  }
 
   .person-card {
     background: var(--paper-raised);
@@ -601,6 +690,7 @@
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="work">Work Tracker</button>
       <button class="tab-btn" data-tab="people">Threads for Each Person</button>
+      <button class="tab-btn" data-tab="proposals">Action Item Proposals<span id="proposalsCountBadge" class="proposals-count-badge" style="display:none;"></span></button>
     </div>
   </div>
 
@@ -610,6 +700,10 @@
 
   <div class="container" id="personContainer" style="display:none;">
     <div class="empty-state">Loading board…</div>
+  </div>
+
+  <div class="container" id="proposalsContainer" style="display:none;">
+    <div class="empty-state">Loading…</div>
   </div>
 
   <div class="footnote">
@@ -913,6 +1007,197 @@
     container.innerHTML = owners.map(function (owner) { return renderPersonCard(owner, map[owner]); }).join("");
   }
 
+  // ---- Action Item Proposals (in-app review, no email) ----
+
+  var pendingProposals = [];
+
+  function computeBoardMap(board) {
+    var map = {};
+    board.forEach(function (t) {
+      map[t.name] = t.subthreads.map(function (s) { return { name: s.name, tag: s.tag }; });
+    });
+    return map;
+  }
+
+  function loadProposals() {
+    google.script.run
+      .withSuccessHandler(function (proposals) {
+        pendingProposals = proposals || [];
+        var badge = document.getElementById("proposalsCountBadge");
+        if (pendingProposals.length) {
+          badge.textContent = pendingProposals.length;
+          badge.style.display = "";
+        } else {
+          badge.style.display = "none";
+        }
+        if (activeTab === "proposals") renderProposals();
+      })
+      .withFailureHandler(function (err) { console.error(err); })
+      .getPendingProposals();
+  }
+
+  function renderProposals() {
+    var container = document.getElementById("proposalsContainer");
+    if (!pendingProposals.length) {
+      container.innerHTML = '<div class="empty-state">No pending action-item proposals right now.</div>';
+      return;
+    }
+    var boardMap = computeBoardMap(boardData.board || []);
+    container.innerHTML = pendingProposals.map(function (p) { return renderProposalCard(p, boardMap); }).join("");
+    container.querySelectorAll(".proposal-card").forEach(function (card) {
+      initProposalCardSubOptions(card, boardMap);
+    });
+  }
+
+  function renderProposalCard(p, boardMap) {
+    var threadNames = Object.keys(boardMap);
+    var threadMatches = threadNames.indexOf(p.ThreadName) !== -1;
+    var useNewThread = p.IsNewThread || !threadMatches;
+    var useNewSubThread = useNewThread || p.IsNewSubThread;
+
+    var threadOptions = threadNames.map(function (name) {
+      var selected = (!useNewThread && name === p.ThreadName) ? " selected" : "";
+      return '<option value="' + escapeHtml(name) + '"' + selected + ">" + escapeHtml(name) + "</option>";
+    }).join("");
+
+    return (
+      '<div class="proposal-card" data-token="' + escapeHtml(p.Token) + '" ' +
+        'data-sub-name="' + escapeHtml(p.SubThreadName) + '" data-is-new-sub="' + (p.IsNewSubThread ? "1" : "0") + '">' +
+        '<div class="proposal-meta">From meeting &middot; ' + escapeHtml(p.MeetingTitle) + "</div>" +
+        '<div class="proposal-field"><label>Item text</label>' +
+          '<textarea class="proposal-input proposal-text-input" rows="2">' + escapeHtml(p.Text) + "</textarea></div>" +
+        '<div class="proposal-row-half">' +
+          '<div class="proposal-field"><label>Owner</label>' +
+            '<input class="proposal-input proposal-owner-input" type="text" value="' + escapeHtml(p.Owner) + '"></div>' +
+          '<div class="proposal-field"><label>Opening date</label>' +
+            '<input class="proposal-input proposal-open-date" type="date" value="' + escapeHtml(p.OpenDate) + '"></div>' +
+          '<div class="proposal-field"><label>Closing date</label>' +
+            '<input class="proposal-input proposal-close-date" type="date" value="' + escapeHtml(p.OpenDate) + '"></div>' +
+        "</div>" +
+        '<div class="proposal-field"><label>Thread' +
+          (p.IsNewThread ? '<span class="proposal-flag-new">proposed new</span>' : "") + "</label>" +
+          '<select class="proposal-input proposal-thread-select">' + threadOptions +
+          '<option value="__new__"' + (useNewThread ? " selected" : "") + ">+ Add New Thread</option></select>" +
+          '<input class="proposal-input proposal-new-thread-input small-gap" type="text" placeholder="New thread name" ' +
+          'value="' + escapeHtml(p.ThreadName) + '" style="display:' + (useNewThread ? "block" : "none") + ';"></div>' +
+        '<div class="proposal-field proposal-subthread-dropdown-field" style="display:' + (useNewThread ? "none" : "block") + '">' +
+          "<label>Sub-thread" + (p.IsNewSubThread ? '<span class="proposal-flag-new">proposed new</span>' : "") + "</label>" +
+          '<select class="proposal-input proposal-subthread-select"></select></div>' +
+        '<div class="proposal-field proposal-new-subthread-field" style="display:' + (useNewSubThread ? "block" : "none") + '">' +
+          "<label>" + (useNewThread ? "Sub-thread name (thread is new, so no list to pick from)" : "New sub-thread name") + "</label>" +
+          '<input class="proposal-input proposal-new-subthread-name" type="text" placeholder="Sub-thread name" ' +
+          'value="' + escapeHtml(p.SubThreadName) + '">' +
+          '<input class="proposal-input proposal-new-subthread-tag small-gap" type="text" placeholder="Tag (optional)" ' +
+          'value="' + escapeHtml(p.SubThreadTag) + '"></div>' +
+        '<p class="proposal-rationale">' + escapeHtml(p.Rationale) + "</p>" +
+        '<div class="proposal-actions">' +
+          '<button class="proposal-commit-btn" data-action="commit-proposal">Commit to board</button>' +
+          '<button class="proposal-dismiss-btn" data-action="dismiss-proposal">Dismiss</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function populateProposalSubOptions(card, boardMap, selectedName, isNewSub) {
+    var threadSelect = card.querySelector(".proposal-thread-select");
+    var subSelect = card.querySelector(".proposal-subthread-select");
+    var subs = (threadSelect.value === "__new__") ? [] : (boardMap[threadSelect.value] || []);
+    subSelect.innerHTML = "";
+    subs.forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s.name;
+      opt.textContent = s.name;
+      if (!isNewSub && s.name === selectedName) opt.selected = true;
+      subSelect.appendChild(opt);
+    });
+    var newOpt = document.createElement("option");
+    newOpt.value = "__new__";
+    newOpt.textContent = "+ Add New Subthread";
+    var exists = subs.some(function (s) { return s.name === selectedName; });
+    if (isNewSub || !exists) newOpt.selected = true;
+    subSelect.appendChild(newOpt);
+  }
+
+  function onProposalThreadChange(card, boardMap) {
+    var isNewThread = card.querySelector(".proposal-thread-select").value === "__new__";
+    card.querySelector(".proposal-new-thread-input").style.display = isNewThread ? "block" : "none";
+    card.querySelector(".proposal-subthread-dropdown-field").style.display = isNewThread ? "none" : "block";
+    if (isNewThread) {
+      card.querySelector(".proposal-new-subthread-field").style.display = "block";
+    } else {
+      populateProposalSubOptions(card, boardMap, "", false);
+      onProposalSubThreadChange(card);
+    }
+  }
+
+  function onProposalSubThreadChange(card) {
+    var isNewSub = card.querySelector(".proposal-subthread-select").value === "__new__";
+    card.querySelector(".proposal-new-subthread-field").style.display = isNewSub ? "block" : "none";
+  }
+
+  function initProposalCardSubOptions(card, boardMap) {
+    var isNewThread = card.querySelector(".proposal-thread-select").value === "__new__";
+    if (!isNewThread) {
+      populateProposalSubOptions(card, boardMap, card.dataset.subName, card.dataset.isNewSub === "1");
+      onProposalSubThreadChange(card);
+    }
+  }
+
+  document.getElementById("proposalsContainer").addEventListener("change", function (e) {
+    var card = e.target.closest(".proposal-card");
+    if (!card) return;
+    var boardMap = computeBoardMap(boardData.board || []);
+    if (e.target.classList.contains("proposal-thread-select")) {
+      onProposalThreadChange(card, boardMap);
+    } else if (e.target.classList.contains("proposal-subthread-select")) {
+      onProposalSubThreadChange(card);
+    }
+  });
+
+  document.getElementById("proposalsContainer").addEventListener("click", function (e) {
+    var el = e.target.closest("[data-action]");
+    if (!el) return;
+    var card = el.closest(".proposal-card");
+    var token = card.getAttribute("data-token");
+    var action = el.getAttribute("data-action");
+
+    if (action === "dismiss-proposal") {
+      if (!confirm("Dismiss this proposal? It won't be added to the board.")) return;
+      google.script.run
+        .withSuccessHandler(loadProposals)
+        .withFailureHandler(function (err) { alert("Error: " + err.message); })
+        .dismissProposal(token);
+      return;
+    }
+
+    if (action === "commit-proposal") {
+      var threadSelect = card.querySelector(".proposal-thread-select");
+      var subSelect = card.querySelector(".proposal-subthread-select");
+      var isNewThread = threadSelect.value === "__new__";
+      var isNewSubThread = isNewThread || subSelect.value === "__new__";
+      var threadName = isNewThread ? card.querySelector(".proposal-new-thread-input").value : threadSelect.value;
+      var subThreadName = isNewSubThread ? card.querySelector(".proposal-new-subthread-name").value : subSelect.value;
+      var subThreadTag = isNewSubThread ? card.querySelector(".proposal-new-subthread-tag").value : "";
+      var text = card.querySelector(".proposal-text-input").value;
+      var owner = card.querySelector(".proposal-owner-input").value;
+      var openDate = card.querySelector(".proposal-open-date").value;
+      var closeDate = card.querySelector(".proposal-close-date").value;
+
+      if (!text.trim()) { alert("Item text can't be empty."); return; }
+      if (!threadName.trim()) { alert("Thread name can't be empty."); return; }
+      if (!subThreadName.trim()) { alert("Sub-thread name can't be empty."); return; }
+
+      el.disabled = true;
+      google.script.run
+        .withSuccessHandler(function () {
+          loadProposals();
+          loadBoard();
+        })
+        .withFailureHandler(function (err) { alert("Error: " + err.message); el.disabled = false; })
+        .submitItemDecision(token, text, owner, openDate, closeDate, threadName, isNewThread, subThreadName, isNewSubThread, subThreadTag);
+    }
+  });
+
   // ---- Tab switching ----
 
   var activeTab = "work";
@@ -924,10 +1209,16 @@
     });
     document.getElementById("container").style.display = tab === "work" ? "" : "none";
     document.getElementById("personContainer").style.display = tab === "people" ? "" : "none";
-    document.getElementById("breadcrumbText").textContent = tab === "work"
-      ? "Vishnu's Landscape / All Threads"
-      : "Vishnu's Landscape / Threads for Each Person";
-    document.getElementById("pageTitleText").textContent = tab === "work" ? "All Threads" : "Threads for Each Person";
+    document.getElementById("proposalsContainer").style.display = tab === "proposals" ? "" : "none";
+    document.getElementById("breadcrumbText").textContent =
+      tab === "work" ? "Vishnu's Landscape / All Threads"
+      : tab === "people" ? "Vishnu's Landscape / Threads for Each Person"
+      : "Vishnu's Landscape / Action Item Proposals";
+    document.getElementById("pageTitleText").textContent =
+      tab === "work" ? "All Threads"
+      : tab === "people" ? "Threads for Each Person"
+      : "Action Item Proposals";
+    if (tab === "proposals") loadProposals();
   }
 
   document.querySelectorAll(".tab-btn").forEach(function (b) {
@@ -983,6 +1274,10 @@
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollForUpdates, 5000);
+    // Proposals only ever change on the 15-minute extraction trigger, so a
+    // slower poll than the board's is plenty responsive without adding
+    // needless server calls.
+    setInterval(loadProposals, 30000);
   }
 
   // ---- Action dispatch (event delegation - board re-renders wholesale) ----
@@ -1243,6 +1538,7 @@
   });
 
   loadBoard();
+  loadProposals();
   startPolling();
 </script>
 

@@ -191,19 +191,7 @@ function installEditTrigger() {
 
 // ---- Web app entry point ----
 
-/**
- * Routes to the action-item review page (see ActionItemExtraction.gs) when
- * the request carries a `token` param; otherwise serves the main board.
- */
-function doGet(e) {
-  const params = (e && e.parameter) || {};
-
-  if (params.token) {
-    return HtmlService.createHtmlOutput(renderItemReviewPage_(params.token))
-      .setTitle("Review action item")
-      .addMetaTag("viewport", "width=device-width, initial-scale=1");
-  }
-
+function doGet() {
   return HtmlService.createHtmlOutputFromFile("Index")
     .setTitle("Vishnu's Landscape")
     .addMetaTag("viewport", "width=device-width, initial-scale=1");

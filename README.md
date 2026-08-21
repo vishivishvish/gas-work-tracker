@@ -92,64 +92,67 @@ rationale for that placement - stored as-is on the meeting's
 `ProcessedMeetings` row (`ProposalsJson` column, `Status: extracted`).
 Nothing on the board changes yet.
 
-**Piece 3 (done): pending-approval tab + email.**
+**Piece 3 (done): pending-approval tab.**
 `createPendingActionsForExtractedMeetings()` expands each `extracted`
 meeting's `ProposalsJson` into one row per item on a new `PendingActions` tab
-(each row gets its own review token and the meeting's `NotesDate` as its
-default `OpenDate`), advancing the meeting to `rows_created`.
-`sendPendingActionEmails()` then emails one HTML summary per meeting - item
-text, owner, date, proposed thread/sub-thread (flagged if it'd be new), and
-the LLM's rationale - with a per-item "Review" link, advancing the meeting to
-`emailed`. That link points at whatever URL this project is currently
-deployed at (`getWebAppBaseUrl_()`, via `ScriptApp.getService().getUrl()`) -
-there's no separate Script Property to keep in sync with the deployment, and
-if the project hasn't been deployed as a web app yet, email-sending just
-stays paused until it has been.
+(each row gets its own token and the meeting's `NotesDate` as its default
+`OpenDate`, `Status: proposed`), advancing the meeting to `rows_created`.
+No email - proposals just sit there until reviewed in the tab described
+below.
 
-**Piece 4 (done): direct-commit approval page.** `Code.gs`'s `doGet()` routes
-a `?token=...` request (the link emailed per item) to a review page built in
-`ActionItemExtraction.gs`, sharing Index.html's visual language (same color
-tokens, Fraunces/Inter/IBM Plex Mono fonts) rather than looking like a bare
-utility form. "Edit before accepting" unlocks every field - text, owner,
-opening date, closing date (both `<input type="date">`, defaulting to the
-meeting's notes date and to each other, matching the open==close means
-still-open/WIP convention), and thread/sub-thread placement itself: a Thread
-dropdown (existing threads, plus "+ Add New Thread" which reveals a name
-box), then that thread's existing sub-threads in a second dropdown (plus its
-own "+ Add New Subthread", which reveals a name + tag box) - unless a
+**Piece 4 (done): in-app review, no email.** A third tab in `Index.html`,
+"Action Item Proposals" (with a count badge, refreshed every 30s), lists
+every `proposed` row via `getPendingProposals()`, sharing the board's visual
+language since it's literally the same page. Every field is directly
+editable inline - text, owner, opening/closing date (`<input type="date">`,
+both defaulting to the meeting's notes date, matching the open==close means
+still-open/WIP convention) - and thread/sub-thread placement itself: a
+Thread dropdown (existing threads, plus "+ Add New Thread" which reveals a
+name box), then that thread's existing sub-threads in a second dropdown
+(plus its own "+ Add New Subthread", revealing a name + tag box) - unless a
 brand-new thread was picked, in which case there's no existing list to show,
 so the sub-thread name box appears directly.
 
-Submitting calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
+**Commit** calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
 existing names case-insensitively before creating anything new) and the
-existing `addItem()` to commit straight to the board, marks the
-`PendingActions` row `committed`, and redirects the browser to the Work
-Tracker itself - there's no separate "Review & Commit" screen, since every
-field including placement is already editable on this one page.
+existing `addItem()` to write straight to the board via `submitItemDecision()`,
+marking the row `committed` and reloading both the proposals list and the
+board. **Dismiss** calls `dismissProposal()` to mark a row `rejected` without
+touching the board.
 
-`runActionItemPipeline()` chains all four pieces (poll → extract → create
-pending rows → email) for the 15-minute trigger
-(`installActionItemPipelineTrigger()` installs it, replacing the piece-1-only
-`installMeetingPollTrigger()`). Setup: set `NIM_API_KEY` and `NIM_MODEL` in
-Script Properties, deploy the web app, then run
-`installActionItemPipelineTrigger()` once.
+`runActionItemPipeline()` chains poll → extract → create pending rows for the
+15-minute trigger (`installActionItemPipelineTrigger()` installs it,
+replacing the piece-1-only `installMeetingPollTrigger()`). Setup: set
+`NIM_API_KEY` and `NIM_MODEL` in Script Properties, deploy the web app, then
+run `installActionItemPipelineTrigger()` once.
 
-Each of the four stage functions (`pollMeetingNotes`, `extractActionItemsForFetchedMeetings`,
-`createPendingActionsForExtractedMeetings`, `sendPendingActionEmails`) holds
-`LockService`'s script lock for its whole run (`withScriptLock_()`), so an
-overlapping run - the 15-minute trigger firing while a manual test run is
-still in flight, say - skips entirely instead of racing the first run and
-double-sending the same email or double-creating the same pending rows.
+### Duplicate-proposal bug and fixes
 
-On top of the lock, `createPendingActionsForExtractedMeetings()` also checks
-directly whether `PendingActions` already has any row for a meeting's
-`EventID` (the Calendar event's own unique ID, which every row in both
-`ProcessedMeetings` and `PendingActions` is keyed by) before creating more -
-regardless of what `ProcessedMeetings.Status` currently claims. That keeps
-things idempotent per-meeting even if status ever drifts out of sync (a
-manual edit, a future bug), not just against the specific race the lock
-covers. `dedupePendingActions()` is the one-off cleanup for duplicates that
-already existed before this guard was added.
+Early versions of this pipeline sent an email per proposal and re-created
+duplicate rows/emails for the same meeting. Three separate things were
+wrong, now all fixed:
+
+1. **The actual root cause**: `pollMeetingNotes()`'s skip-check only
+   recognized `Status === "notes_fetched"` as "already handled." Once a
+   meeting advanced further (`extracted`, `rows_created`), the *next* poll no
+   longer saw it as done, found the same still-present Gemini attachment, and
+   reset its status back to `notes_fetched` - re-triggering extraction and
+   proposal creation for a meeting that was already fully processed, every 15
+   minutes, for as long as it stayed within the lookback window. Fixed: the
+   check now skips anything past `waiting`, full stop.
+2. **A real but secondary race**: two overlapping runs (the trigger firing
+   while a manual test run was still in flight, say) could both read a
+   meeting as not-yet-handled before either wrote its new status back. Fixed:
+   each of the three stage functions holds `LockService`'s script lock for
+   its whole run (`withScriptLock_()`) - an overlapping run just skips.
+3. **Defense in depth**: `createPendingActionsForExtractedMeetings()` also
+   checks directly whether `PendingActions` already has any row for a
+   meeting's `EventID` (the Calendar event's own unique ID) before creating
+   more, regardless of what `ProcessedMeetings.Status` claims - idempotent
+   per-meeting even if status ever drifts out of sync some other way.
+
+`dedupePendingActions()` is the one-off cleanup for duplicate rows that
+existed before these fixes landed.
 
 ## Files
 
