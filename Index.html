@@ -1222,6 +1222,8 @@
     return map;
   }
 
+  var lastPendingTokensKey = "";
+
   function loadPendingApprovals() {
     google.script.run
       .withSuccessHandler(function (proposals) {
@@ -1237,7 +1239,14 @@
           // rather than leaving an empty/vanished tab marked active.
           if (activeTab === "pending") setActiveTab("meetings");
         }
-        if (activeTab === "pending") renderPendingApprovals();
+        // Only rebuild the cards when the *set* of pending items actually
+        // changed (one got added/committed/rejected) - not on every 5s poll,
+        // otherwise a full re-render on an unchanged set would blow away
+        // whatever you're mid-typing into a card's fields.
+        var tokensKey = pendingProposals.map(function (p) { return p.Token; }).sort().join(",");
+        var changed = tokensKey !== lastPendingTokensKey;
+        lastPendingTokensKey = tokensKey;
+        if (activeTab === "pending" && changed) renderPendingApprovals();
       })
       .withFailureHandler(function (err) { console.error(err); })
       .getPendingProposals();
