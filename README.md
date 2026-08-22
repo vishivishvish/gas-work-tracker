@@ -60,50 +60,50 @@ one place that should always reflect what the app actually does today.
   trigger, edits made straight in the Google Sheet (not through the web
   app) also bump `LastModified` and show up on the next poll.
 
-## Roadmap: automated action-item extraction from meeting notes
+## Meeting action-item extraction (manual, in `ActionItemExtraction.gs`)
 
-In progress - built in four pieces, in `ActionItemExtraction.gs`, tracked via
-a new `ProcessedMeetings` tab on the same Sheet.
+An earlier version of this tried to run fully automatically (a 15-minute
+polling trigger that emailed you proposals). It kept producing duplicates -
+a bug in the polling logic re-triggered extraction for meetings that had
+already been processed - so the design changed to fully manual/button-driven
+instead: nothing runs on a schedule, and a given meeting can only ever be
+extracted once, ever, by construction (see below), not by relying on getting
+some background process's bookkeeping right.
 
-**Piece 1 (done): poll for the Gemini notes doc.** Every meeting on the
-calendar gets Gemini-generated notes attached to its Calendar event once the
-meeting ends (timing varies with meeting length). `pollMeetingNotes()` runs
-on a 15-minute time-driven trigger, sweeps events from the last
-`MEETING_LOOKBACK_HOURS` (24) hours - a sliding window recomputed from "now"
-on every run, not tracked against the previous run - via the Calendar
-Advanced Service, and marks each one `waiting` or `notes_fetched` in
-`ProcessedMeetings` depending on whether that attachment has shown up yet, so
-a meeting is only ever read once, whenever its notes actually land. Once a
-meeting falls outside that 24-hour window it's no longer checked at all, so a
-meeting whose notes take longer than that to appear (or one from further
-back than 24 hours ago that was never caught) won't be picked up
-automatically - bump `MEETING_LOOKBACK_HOURS` and run `pollMeetingNotes`
-manually once to backfill a case like that. The notes doc's own creation
-date (its file metadata, not the calendar event) is captured here too, as
-`NotesDate` - this becomes every action item's default opening date.
+**"Meetings" tab.** `getCalendarMeetingsWithAttachments()` lists every
+Calendar event since `MEETINGS_SINCE_DATE` (currently 2026-05-19) with at
+least one attachment, reverse-chronological, never later than right now
+regardless of what's still ahead on the calendar. Each meeting shows its
+date/time, attendees, attachment names, and is left-bordered in that event's
+own Calendar color (`Calendar.Colors.get().event`, falling back to the
+primary calendar's default color if the event has none). An attachment is
+flagged as a likely Gemini transcript if its title starts with "Notes" and
+contains "Gemini" (`looksLikeGeminiTranscript_()`); a meeting only gets an
+**Extract Action Items** button if at least one of its attachments matches.
+This tab is deliberately **not** auto-polled - Calendar API calls are
+heavier and quota-limited compared to the board's cheap Sheet-timestamp
+check, and calendar history doesn't change every 5 seconds anyway - so it
+loads once when opened, plus a manual Refresh button.
 
-**Piece 2 (done): propose action items via NIM.** For every `notes_fetched`
-meeting, `extractActionItemsForFetchedMeetings()` sends its notes text, plus
-a summary of the board's current threads/sub-threads, to NVIDIA NIM's
-OpenAI-compatible chat completions endpoint (model/API key set as Script
-Properties, never hardcoded). The model returns a JSON array of proposed
-items - text, owner, target thread/sub-thread (existing or new), and a short
-rationale for that placement - stored as-is on the meeting's
-`ProcessedMeetings` row (`ProposalsJson` column, `Status: extracted`).
-Nothing on the board changes yet.
+**Extracting.** Clicking **Extract Action Items** calls
+`extractActionItemsForMeeting(eventId)`, which picks the best-matching
+attachment (preferring the Notes+Gemini naming convention, falling back to
+any Google Doc attachment), reads its text, sends it plus a summary of the
+board's current threads/sub-threads to NVIDIA NIM's OpenAI-compatible chat
+completions endpoint (model/API key as Script Properties, never hardcoded),
+and writes one `PendingActions` row per proposed item (`Status: proposed`,
+`OpenDate` defaulted from the notes doc's own creation date). It then
+**permanently** records the `EventID` in a new `ExtractedMeetings` tab - the
+Meetings tab checks that to swap the button to a grayed, disabled "Action
+Items Extracted," and the server rejects a second extraction for the same
+`EventID` even if the button were somehow clicked anyway. That's the whole
+duplication guard now: no trigger, no polling, no window for a race.
 
-**Piece 3 (done): pending-approval tab.**
-`createPendingActionsForExtractedMeetings()` expands each `extracted`
-meeting's `ProposalsJson` into one row per item on a new `PendingActions` tab
-(each row gets its own token and the meeting's `NotesDate` as its default
-`OpenDate`, `Status: proposed`), advancing the meeting to `rows_created`.
-No email - proposals just sit there until reviewed in the tab described
-below.
-
-**Piece 4 (done): in-app review, no email.** A third tab in `Index.html`,
-"Action Item Proposals" (with a count badge, refreshed every 30s), lists
-every `proposed` row via `getPendingProposals()`, sharing the board's visual
-language since it's literally the same page. Every field is directly
+**"Action Items Pending for Approval" tab.** Only present in the tab bar at
+all while `getPendingProposals()` (any `PendingActions` row still `proposed`)
+returns something - checked on the same 5-second poll the board already
+uses, so the tab appears right after an extraction and disappears again once
+every item from it has been accepted or rejected. Every field is directly
 editable inline - text, owner, opening/closing date (`<input type="date">`,
 both defaulting to the meeting's notes date, matching the open==close means
 still-open/WIP convention) - and thread/sub-thread placement itself: a
@@ -113,46 +113,21 @@ name box), then that thread's existing sub-threads in a second dropdown
 brand-new thread was picked, in which case there's no existing list to show,
 so the sub-thread name box appears directly.
 
-**Commit** calls `findOrCreateThread_`/`findOrCreateSubThread_` (matching
-existing names case-insensitively before creating anything new) and the
-existing `addItem()` to write straight to the board via `submitItemDecision()`,
-marking the row `committed` and reloading both the proposals list and the
-board. **Dismiss** calls `dismissProposal()` to mark a row `rejected` without
-touching the board.
+**Accept with Edits** calls `findOrCreateThread_`/`findOrCreateSubThread_`
+(matching existing names case-insensitively before creating anything new)
+and the existing `addItem()` to write straight to the board via
+`submitItemDecision()`, marking the row `committed`. **Reject** calls
+`dismissProposal()` to mark a row `rejected` without touching the board.
 
-`runActionItemPipeline()` chains poll → extract → create pending rows for the
-15-minute trigger (`installActionItemPipelineTrigger()` installs it,
-replacing the piece-1-only `installMeetingPollTrigger()`). Setup: set
-`NIM_API_KEY` and `NIM_MODEL` in Script Properties, deploy the web app, then
-run `installActionItemPipelineTrigger()` once.
+**Setup**: set `NIM_API_KEY` and `NIM_MODEL` in Script Properties, deploy
+the web app. No trigger to install - there's nothing scheduled.
 
-### Duplicate-proposal bug and fixes
-
-Early versions of this pipeline sent an email per proposal and re-created
-duplicate rows/emails for the same meeting. Three separate things were
-wrong, now all fixed:
-
-1. **The actual root cause**: `pollMeetingNotes()`'s skip-check only
-   recognized `Status === "notes_fetched"` as "already handled." Once a
-   meeting advanced further (`extracted`, `rows_created`), the *next* poll no
-   longer saw it as done, found the same still-present Gemini attachment, and
-   reset its status back to `notes_fetched` - re-triggering extraction and
-   proposal creation for a meeting that was already fully processed, every 15
-   minutes, for as long as it stayed within the lookback window. Fixed: the
-   check now skips anything past `waiting`, full stop.
-2. **A real but secondary race**: two overlapping runs (the trigger firing
-   while a manual test run was still in flight, say) could both read a
-   meeting as not-yet-handled before either wrote its new status back. Fixed:
-   each of the three stage functions holds `LockService`'s script lock for
-   its whole run (`withScriptLock_()`) - an overlapping run just skips.
-3. **Defense in depth**: `createPendingActionsForExtractedMeetings()` also
-   checks directly whether `PendingActions` already has any row for a
-   meeting's `EventID` (the Calendar event's own unique ID) before creating
-   more, regardless of what `ProcessedMeetings.Status` claims - idempotent
-   per-meeting even if status ever drifts out of sync some other way.
-
-`dedupePendingActions()` is the one-off cleanup for duplicate rows that
-existed before these fixes landed.
+**`wipeActionItemPipeline()`** is a one-off reset: deletes the old
+`ProcessedMeetings` tab entirely (belonged to the retired automatic-polling
+design), clears `PendingActions` and `ExtractedMeetings` down to just their
+headers, and removes any leftover trigger from that old design. It never
+touches the Work Tracker board itself - anything already committed stays
+exactly as is.
 
 ## Files
 

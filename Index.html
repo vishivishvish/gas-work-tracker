@@ -576,6 +576,93 @@
     cursor: pointer;
   }
 
+  .meetings-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+  .refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--canvas-ink);
+    background: var(--paper-raised);
+    border: 1px solid var(--canvas-line);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .refresh-btn:hover { opacity: 0.9; }
+
+  .meeting-card {
+    display: flex;
+    gap: 16px;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--gcal-blue, #4285F4);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(31,41,55,0.04);
+  }
+  .meeting-icon {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    margin-top: 2px;
+  }
+  .meeting-body { flex: 1; min-width: 0; }
+  .meeting-title {
+    font-family: 'Fraunces', serif;
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .meeting-meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    letter-spacing: 0.02em;
+    margin-bottom: 8px;
+  }
+  .meeting-attendees { font-size: 13px; color: var(--ink-faint); margin-bottom: 10px; }
+  .meeting-attachments { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .meeting-attachment {
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .transcript-badge {
+    display: inline-block;
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 5px;
+    padding: 2px 6px;
+  }
+  .extract-btn {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    color: #fff;
+    background: var(--amber);
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    cursor: pointer;
+  }
+  .extract-btn:hover { opacity: 0.92; }
+  .extract-btn:disabled { cursor: default; opacity: 0.6; }
+  .extract-btn.extracted {
+    background: var(--paper-recessed);
+    color: var(--ink-faint);
+  }
+
   .person-card {
     background: var(--paper-raised);
     border: 1px solid var(--line);
@@ -690,7 +777,8 @@
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="work">Work Tracker</button>
       <button class="tab-btn" data-tab="people">Threads for Each Person</button>
-      <button class="tab-btn" data-tab="proposals">Action Item Proposals<span id="proposalsCountBadge" class="proposals-count-badge" style="display:none;"></span></button>
+      <button class="tab-btn" data-tab="meetings">Meetings</button>
+      <button class="tab-btn" data-tab="pending" id="pendingTabBtn" style="display:none;">Action Items Pending for Approval<span id="pendingCountBadge" class="proposals-count-badge"></span></button>
     </div>
   </div>
 
@@ -702,7 +790,11 @@
     <div class="empty-state">Loading board…</div>
   </div>
 
-  <div class="container" id="proposalsContainer" style="display:none;">
+  <div class="container" id="meetingsContainer" style="display:none;">
+    <div class="empty-state">Loading…</div>
+  </div>
+
+  <div class="container" id="pendingContainer" style="display:none;">
     <div class="empty-state">Loading…</div>
   </div>
 
@@ -1007,7 +1099,118 @@
     container.innerHTML = owners.map(function (owner) { return renderPersonCard(owner, map[owner]); }).join("");
   }
 
-  // ---- Action Item Proposals (in-app review, no email) ----
+  // ---- Meetings (Calendar browser) ----
+  // Deliberately NOT auto-polled - Calendar API calls are heavier/quota
+  // limited than a Sheet read, and calendar history doesn't change every 5
+  // seconds anyway. Loads once when the tab is opened, plus a manual
+  // Refresh button.
+
+  var CALENDAR_ICON_SVG =
+    '<svg class="meeting-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+    '<rect x="3" y="4" width="18" height="17" rx="2.5" fill="#EAF2FC" stroke="#4285F4" stroke-width="1.5"/>' +
+    '<rect x="3" y="4" width="18" height="5" rx="2" fill="#4285F4"/>' +
+    '<line x1="7" y1="2.5" x2="7" y2="6" stroke="#4285F4" stroke-width="1.6" stroke-linecap="round"/>' +
+    '<line x1="17" y1="2.5" x2="17" y2="6" stroke="#4285F4" stroke-width="1.6" stroke-linecap="round"/>' +
+    '<text x="12" y="17.5" font-size="9" font-family="Inter, sans-serif" font-weight="600" fill="#4285F4" text-anchor="middle">31</text>' +
+    "</svg>";
+
+  function formatMeetingWhen(m) {
+    if (!m.start) return "";
+    if (m.isAllDay) {
+      return new Date(m.start).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) + " (all day)";
+    }
+    var start = new Date(m.start);
+    var end = m.end ? new Date(m.end) : null;
+    var dateStr = start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+    var startTime = start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    var endTime = end ? end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : "";
+    return dateStr + " · " + startTime + (endTime ? " – " + endTime : "");
+  }
+
+  function loadMeetings() {
+    var container = document.getElementById("meetingsContainer");
+    container.innerHTML = '<div class="empty-state">Loading meetings…</div>';
+    google.script.run
+      .withSuccessHandler(function (meetings) {
+        renderMeetings(meetings || []);
+      })
+      .withFailureHandler(function (err) {
+        container.innerHTML = '<div class="empty-state">Error loading meetings: ' + escapeHtml(err.message) + "</div>";
+      })
+      .getCalendarMeetingsWithAttachments();
+  }
+
+  function renderMeetings(meetings) {
+    var container = document.getElementById("meetingsContainer");
+    var toolbar = '<div class="meetings-toolbar"><button class="refresh-btn" id="refreshMeetingsBtn">&#8635; Refresh</button></div>';
+    if (!meetings.length) {
+      container.innerHTML = toolbar + '<div class="empty-state">No meetings with attachments found since May 19, 2026.</div>';
+      document.getElementById("refreshMeetingsBtn").addEventListener("click", loadMeetings);
+      return;
+    }
+    container.innerHTML = toolbar + meetings.map(renderMeetingCard).join("");
+    document.getElementById("refreshMeetingsBtn").addEventListener("click", loadMeetings);
+  }
+
+  function renderMeetingCard(m) {
+    var attachmentsHtml = m.attachments.map(function (a) {
+      return '<div class="meeting-attachment">' +
+        (a.looksLikeTranscript ? '<span class="transcript-badge">Transcript</span>' : "&#128206;") +
+        " " + escapeHtml(a.title) + "</div>";
+    }).join("");
+
+    var attendeesHtml = m.attendees.length
+      ? '<div class="meeting-attendees">With: ' + escapeHtml(m.attendees.join(", ")) + "</div>"
+      : "";
+
+    var buttonHtml;
+    if (m.extracted) {
+      buttonHtml = '<button class="extract-btn extracted" disabled>Action Items Extracted</button>';
+    } else if (m.hasTranscript) {
+      buttonHtml = '<button class="extract-btn" data-action="extract-items" data-event-id="' + escapeHtml(m.eventId) + '">Extract Action Items</button>';
+    } else {
+      buttonHtml = '<span class="meeting-meta">No Gemini transcript detected among the attachments.</span>';
+    }
+
+    return (
+      '<div class="meeting-card" style="border-left-color:' + escapeHtml(m.colorBackground) + '">' +
+        CALENDAR_ICON_SVG +
+        '<div class="meeting-body">' +
+          '<div class="meeting-title">' + escapeHtml(m.title) + "</div>" +
+          '<div class="meeting-meta">' + escapeHtml(formatMeetingWhen(m)) + "</div>" +
+          attendeesHtml +
+          '<div class="meeting-attachments">' + attachmentsHtml + "</div>" +
+          buttonHtml +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  document.getElementById("meetingsContainer").addEventListener("click", function (e) {
+    var el = e.target.closest('[data-action="extract-items"]');
+    if (!el) return;
+    var eventId = el.getAttribute("data-event-id");
+    el.disabled = true;
+    el.textContent = "Extracting…";
+    google.script.run
+      .withSuccessHandler(function (count) {
+        loadMeetings();
+        loadPendingApprovals();
+        setActiveTab("pending");
+      })
+      .withFailureHandler(function (err) {
+        alert("Error: " + err.message);
+        el.disabled = false;
+        el.textContent = "Extract Action Items";
+      })
+      .extractActionItemsForMeeting(eventId);
+  });
+
+  // ---- Action Items Pending for Approval (in-app review, no email) ----
+  // This tab only exists in the tab bar while there's at least one
+  // "proposed" item - it's checked on the same 5-second poll as the board,
+  // appears the moment a meeting is extracted, and disappears again once
+  // every item from it has been accepted or rejected.
 
   var pendingProposals = [];
 
@@ -1019,27 +1222,31 @@
     return map;
   }
 
-  function loadProposals() {
+  function loadPendingApprovals() {
     google.script.run
       .withSuccessHandler(function (proposals) {
         pendingProposals = proposals || [];
-        var badge = document.getElementById("proposalsCountBadge");
+        var tabBtn = document.getElementById("pendingTabBtn");
+        var badge = document.getElementById("pendingCountBadge");
         if (pendingProposals.length) {
           badge.textContent = pendingProposals.length;
-          badge.style.display = "";
+          tabBtn.style.display = "";
         } else {
-          badge.style.display = "none";
+          tabBtn.style.display = "none";
+          // The tab it was showing no longer exists - fall back to Meetings
+          // rather than leaving an empty/vanished tab marked active.
+          if (activeTab === "pending") setActiveTab("meetings");
         }
-        if (activeTab === "proposals") renderProposals();
+        if (activeTab === "pending") renderPendingApprovals();
       })
       .withFailureHandler(function (err) { console.error(err); })
       .getPendingProposals();
   }
 
-  function renderProposals() {
-    var container = document.getElementById("proposalsContainer");
+  function renderPendingApprovals() {
+    var container = document.getElementById("pendingContainer");
     if (!pendingProposals.length) {
-      container.innerHTML = '<div class="empty-state">No pending action-item proposals right now.</div>';
+      container.innerHTML = '<div class="empty-state">No pending action items right now.</div>';
       return;
     }
     var boardMap = computeBoardMap(boardData.board || []);
@@ -1091,8 +1298,8 @@
           'value="' + escapeHtml(p.SubThreadTag) + '"></div>' +
         '<p class="proposal-rationale">' + escapeHtml(p.Rationale) + "</p>" +
         '<div class="proposal-actions">' +
-          '<button class="proposal-commit-btn" data-action="commit-proposal">Commit to board</button>' +
-          '<button class="proposal-dismiss-btn" data-action="dismiss-proposal">Dismiss</button>' +
+          '<button class="proposal-commit-btn" data-action="commit-proposal">Accept with Edits</button>' +
+          '<button class="proposal-dismiss-btn" data-action="dismiss-proposal">Reject</button>' +
         "</div>" +
       "</div>"
     );
@@ -1143,7 +1350,7 @@
     }
   }
 
-  document.getElementById("proposalsContainer").addEventListener("change", function (e) {
+  document.getElementById("pendingContainer").addEventListener("change", function (e) {
     var card = e.target.closest(".proposal-card");
     if (!card) return;
     var boardMap = computeBoardMap(boardData.board || []);
@@ -1154,7 +1361,7 @@
     }
   });
 
-  document.getElementById("proposalsContainer").addEventListener("click", function (e) {
+  document.getElementById("pendingContainer").addEventListener("click", function (e) {
     var el = e.target.closest("[data-action]");
     if (!el) return;
     var card = el.closest(".proposal-card");
@@ -1162,9 +1369,9 @@
     var action = el.getAttribute("data-action");
 
     if (action === "dismiss-proposal") {
-      if (!confirm("Dismiss this proposal? It won't be added to the board.")) return;
+      if (!confirm("Reject this item? It won't be added to the board.")) return;
       google.script.run
-        .withSuccessHandler(loadProposals)
+        .withSuccessHandler(loadPendingApprovals)
         .withFailureHandler(function (err) { alert("Error: " + err.message); })
         .dismissProposal(token);
       return;
@@ -1190,7 +1397,7 @@
       el.disabled = true;
       google.script.run
         .withSuccessHandler(function () {
-          loadProposals();
+          loadPendingApprovals();
           loadBoard();
         })
         .withFailureHandler(function (err) { alert("Error: " + err.message); el.disabled = false; })
@@ -1202,6 +1409,13 @@
 
   var activeTab = "work";
 
+  var TAB_LABELS = {
+    work: "All Threads",
+    people: "Threads for Each Person",
+    meetings: "Meetings",
+    pending: "Action Items Pending for Approval",
+  };
+
   function setActiveTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(function (b) {
@@ -1209,16 +1423,12 @@
     });
     document.getElementById("container").style.display = tab === "work" ? "" : "none";
     document.getElementById("personContainer").style.display = tab === "people" ? "" : "none";
-    document.getElementById("proposalsContainer").style.display = tab === "proposals" ? "" : "none";
-    document.getElementById("breadcrumbText").textContent =
-      tab === "work" ? "Vishnu's Landscape / All Threads"
-      : tab === "people" ? "Vishnu's Landscape / Threads for Each Person"
-      : "Vishnu's Landscape / Action Item Proposals";
-    document.getElementById("pageTitleText").textContent =
-      tab === "work" ? "All Threads"
-      : tab === "people" ? "Threads for Each Person"
-      : "Action Item Proposals";
-    if (tab === "proposals") loadProposals();
+    document.getElementById("meetingsContainer").style.display = tab === "meetings" ? "" : "none";
+    document.getElementById("pendingContainer").style.display = tab === "pending" ? "" : "none";
+    document.getElementById("breadcrumbText").textContent = "Vishnu's Landscape / " + TAB_LABELS[tab];
+    document.getElementById("pageTitleText").textContent = TAB_LABELS[tab];
+    if (tab === "meetings") loadMeetings();
+    if (tab === "pending") renderPendingApprovals();
   }
 
   document.querySelectorAll(".tab-btn").forEach(function (b) {
@@ -1274,10 +1484,11 @@
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollForUpdates, 5000);
-    // Proposals only ever change on the 15-minute extraction trigger, so a
-    // slower poll than the board's is plenty responsive without adding
-    // needless server calls.
-    setInterval(loadProposals, 30000);
+    // Same 5-second cadence as the board - this is what makes the pending
+    // tab appear right after an extraction and disappear once everything in
+    // it has been accepted/rejected. Cheap (one Sheet read), unlike the
+    // Meetings tab's Calendar fetch, which is deliberately NOT auto-polled.
+    setInterval(loadPendingApprovals, 5000);
   }
 
   // ---- Action dispatch (event delegation - board re-renders wholesale) ----
@@ -1538,7 +1749,7 @@
   });
 
   loadBoard();
-  loadProposals();
+  loadPendingApprovals();
   startPolling();
 </script>
 
