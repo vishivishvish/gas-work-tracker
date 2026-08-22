@@ -398,9 +398,14 @@ function getPendingActionRow_(token) {
  * tab itself disappears from the tab bar whenever this comes back empty.
  */
 function getPendingProposals() {
-  return rowsToObjects_(getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS)).filter(function (r) {
-    return r.Status === "proposed";
-  });
+  return rowsToObjects_(getSheet_(ACTION_ITEM_SHEET_NAMES.PENDING_ACTIONS))
+    .filter(function (r) {
+      return r.Status === "proposed";
+    })
+    .map(function (r) {
+      r.OpenDate = formatDateValue_(r.OpenDate);
+      return r;
+    });
 }
 
 /**
