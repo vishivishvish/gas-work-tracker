@@ -1,19 +1,15 @@
 # Google Apps Script Work Tracker
 
-A horizontal, Trello-like work tracker with a high degree of flexibility & extensibility for managing a large number of ongoing
-work threads. Each numbered thread branches out into sub-threads
-laid out side by side, and each sub-thread holds a list of lettered,
-checkable action steps. Threads can be dragged to reorder them, colored
-from a 31-option picker, and threads/sub-threads/items can each carry an
-optional date. A second tab pivots the same data into a per-person
-checklist of open items.
+A horizontal, Trello-inspured work tracker, but with total script-based flexibility & feature extensibility 
+for managing a large number of ongoing work threads. Each numbered thread branches out into sub-threads
+laid out side by side, and each sub-thread holds a list of lettered, checkable action steps. 
+Threads can be dragged to reorder them, colored from a 31-option picker, and threads/sub-threads/items 
+can each carry an optional date. A second tab pivots the same data into a per-person checklist of open items.
 
-Everything is read/write straight from the underlying Sheet, so nothing
-about the board's state ever lives only in the browser tab.
+Everything is read/write straight from the underlying Sheet, so nothing about the board's state ever lives only in the browser tab.
 
-Runs as a Google Apps Script web app, backed by a Google Sheet, inside your
-own Google Workspace account: no external hosting, no separate login
-required beyond your own Google account.
+Runs as a Google Apps Script web app, backed by a Google Sheet, inside your own Google Workspace account: 
+no external hosting, no separate login required beyond your own Google account.
 
 ## Features
 
