@@ -118,6 +118,19 @@ and the existing `addItem()` to write straight to the board via
 **Setup**: set `NIM_API_KEY` and `NIM_MODEL` in Script Properties, deploy
 the web app. No trigger to install - there's nothing scheduled.
 
+**Two gotchas already hit and fixed, worth knowing about if this tab acts up
+again:**
+- `google.script.run` silently fails to deliver a return value (the client
+  gets `null`, no visible error) if any field in the returned data is a raw
+  Apps Script `Date` object instead of a string - `OpenDate` had to be run
+  through the same `formatDateValue_()` helper `getBoardData()` already uses
+  before `getPendingProposals()` can ship it to the browser.
+- The pending-tab poll used to re-render all cards from scratch every 5
+  seconds, which reset any in-progress edits to whatever was last saved.
+  `loadPendingApprovals()` now diffs the incoming set of `Token`s against
+  what's already rendered and only rebuilds the cards when that set actually
+  changed (an item got added, accepted, or rejected).
+
 **`wipeActionItemPipeline()`** is a one-off reset: deletes the old
 `ProcessedMeetings` tab entirely (belonged to the retired automatic-polling
 design), clears `PendingActions` and `ExtractedMeetings` down to just their
