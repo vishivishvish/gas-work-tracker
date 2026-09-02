@@ -1,14 +1,14 @@
 # Google Apps Script Work Tracker
 
-A horizontal, Trello-inspired work tracker, but with total script-based flexibility & feature extensibility 
+A horizontal, Trello-inspired work tracker, but with total script-based flexibility and feature extensibility
 for managing a large number of ongoing work threads. Each numbered thread branches out into sub-threads
-laid out side by side, and each sub-thread holds a list of lettered, checkable action steps. 
-Threads can be dragged to reorder them, colored from a 31-option picker, and threads/sub-threads/items 
+laid out side by side, and each sub-thread holds a list of lettered, checkable action steps.
+Threads can be dragged to reorder them, colored from a 31-option picker, and threads/sub-threads/items
 can each carry an optional date. A second tab pivots the same data into a per-person checklist of open items.
 
-Everything is read/write straight from the underlying Sheet, so nothing about the board's state ever lives only in the browser tab.
+Everything is read from and written straight to the underlying Sheet, so nothing about the board's state ever lives only in the browser tab.
 
-Runs as a Google Apps Script web app, backed by a Google Sheet, inside your own Google Workspace account: 
+Runs as a Google Apps Script web app, backed by a Google Sheet, inside your own Google Workspace account:
 no external hosting, no separate login required beyond your own Google account.
 
 ## Features
@@ -181,14 +181,14 @@ between Drive folders at any time without breaking anything.
 6. *If you had this project set up before per-thread `Color` existed*,
    select `migrateAddThreadColor` in the function dropdown and click **Run**
    once, for the same reason as above.
-6b. *If you had this project set up before items had separate opening/closing
+7. *If you had this project set up before items had separate opening/closing
    dates (a single `Date` column instead)*, select
    `migrateItemDatesToOpenClose` in the function dropdown and click **Run**
    once - it renames `Date` to `OpenDate` in place (keeping existing values)
    and backfills `CloseDate` to match `OpenDate` for every existing item, so
    they all start out looking "still open," same as a freshly-added item
    would. Brand-new setups already get both columns from `setupSheets`.
-7. *(Optional, recommended)* Set up direct-edit sync: select `installEditTrigger`
+8. *(Optional, recommended)* Set up direct-edit sync: select `installEditTrigger`
    in the function dropdown and click **Run**. (Not done via the Triggers UI's
    "Add Trigger" dialog - its "From spreadsheet" event source is only offered
    to scripts *bound* to a Sheet, i.e. opened via Extensions > Apps Script
@@ -197,14 +197,14 @@ between Drive folders at any time without breaking anything.
    Without this, edits made directly in the Sheet (rather than through the
    web app) won't be picked up until the next write through the app bumps
    `LastModified` - with it, direct Sheet edits sync too.
-8. **Deploy > New deployment > Web app**. Execute as: **Me**. Who has
+9. **Deploy > New deployment > Web app**. Execute as: **Me**. Who has
    access: **Only myself** (or your Workspace domain, if teammates should
    use it too - they'd then also need edit access to the underlying Sheet).
    Copy the resulting web app URL - that's the bookmark you'll use daily.
-9. To ship code changes later **without changing that URL**: **Deploy >
-   Manage deployments** > pick the existing deployment > pencil/Edit icon >
-   Version: **New version** > Deploy. Creating a brand-new deployment
-   instead of editing the existing one gives you a different URL each time.
+10. To ship code changes later **without changing that URL**: **Deploy >
+    Manage deployments** > pick the existing deployment > pencil/Edit icon >
+    Version: **New version** > Deploy. Creating a brand-new deployment
+    instead of editing the existing one gives you a different URL each time.
 
 ## How live updates work
 
