@@ -208,7 +208,7 @@ between Drive folders at any time without breaking anything.
 
 ## How live updates work
 
-Since Apps Script web apps can't push updates over a server socket,
+Since Apps Script web apps cannot push updates over a server socket,
 `Index.html` instead polls `getLastModified()` every 5 seconds (a single
 cheap cell read), only re-fetching the full board (`getBoardData()`) once
 that timestamp has actually moved. Every write function bumps the timestamp, and (with the
