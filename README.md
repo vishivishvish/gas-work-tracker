@@ -136,7 +136,7 @@ again:**
 design), clears `PendingActions` and `ExtractedMeetings` down to just their
 headers, and removes any leftover trigger from that old design. It never
 touches the Work Tracker board itself - anything already committed stays
-exactly as is.
+exactly as it is.
 
 ## Files
 
@@ -273,4 +273,4 @@ to the Sheet - there's no "owner" row to store it against, since owners are
 derived from item data rather than being their own entity - so it resets to
 all-open on the next page load.
 
-<!-- readme-grammar-pass: 2026-09-24 -->
+<!-- readme-grammar-pass: 2026-10-02 -->
