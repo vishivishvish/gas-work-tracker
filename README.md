@@ -44,7 +44,7 @@ one place that should always reflect what the app actually does today.
   board data into one checklist per owner, listing every *open* (unchecked)
   item assigned to them across all threads/sub-threads, with the source
   thread name and tag shown for context. Items can be checked off directly
-  from this view. Computed entirely client-side from the already-loaded
+  from this view. This view is computed entirely client-side from the already-loaded
   board data - no extra backend call. Each person's card is collapsible
   (same chevron pattern as threads), though the open/closed state resets on
   reload since there's no "owner" row in the Sheet to persist it against.
