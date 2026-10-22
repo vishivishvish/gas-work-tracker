@@ -49,7 +49,7 @@ one place that should always reflect what the app actually does today.
   (same chevron pattern as threads), though the open/closed state resets on
   reload since there's no "owner" row in the Sheet to persist it against.
 - **Live polling** - the UI polls `getLastModified()` every 5 seconds and
-  only re-fetches the full board when it's actually changed, so multiple
+  only re-fetches the full board when it's truly changed, so multiple
   open tabs (or direct Sheet edits, with the installable trigger) stay in
   sync without a manual refresh.
 - **Direct-Sheet-edit sync** - with the optional installable `onEdit`
