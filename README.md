@@ -273,4 +273,4 @@ to the Sheet - there's no "owner" row to store it against, since owners are
 derived from item data rather than being their own entity - so it resets to
 all-open on the next page load.
 
-<!-- readme-grammar-pass: 2026-09-24 -->
+<!-- readme-grammar-pass: 2026-10-22 -->
